@@ -12,6 +12,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Fallout.Tools.Core.AAF;
 using Fallout.Tools.Core.Imaging;
+using Fallout.Tools.Core.FRM;
 using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
@@ -51,6 +52,7 @@ public sealed class MainWindow : Window
     private readonly List<UiTextItem> _items = new();
     private readonly List<EraseArea> _eraseAreas = new();
     private string? _baseImagePath;
+    private string? _sourceFrmPath;
     private Bitmap? _baseBitmap;
     private AafFont? _font;
     private string? _fontPath;
@@ -114,6 +116,7 @@ public sealed class MainWindow : Window
         };
 
         toolbar.Children.Add(MakeButton("Open image", OnOpenImageAsync));
+        toolbar.Children.Add(MakeButton("Open FRM", OnOpenFrmAsync));
         toolbar.Children.Add(MakeButton("Open AAF", OnOpenAafAsync));
         toolbar.Children.Add(MakeButton("Open ACT", OnOpenActAsync));
         toolbar.Children.Add(MakeButton("Add text", _ => AddTextItem()));
@@ -123,6 +126,7 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(MakeButton("Save project", OnSaveProjectAsync));
         toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
         toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
+        toolbar.Children.Add(MakeButton("Export FRM", OnExportFrmAsync));
         toolbar.Children.Add(MakeButton("Export PNG preview", OnExportPngAsync));
 
         Grid.SetColumnSpan(toolbar, 2);
@@ -259,8 +263,32 @@ public sealed class MainWindow : Window
         string? path = await PickOpenFileAsync("Open clean UI image", new[] { "*.png", "*.bmp" });
         if (path is null) return;
 
+        _sourceFrmPath = null;
         LoadBaseImage(path);
         SetStatus($"Opened image: {Path.GetFileName(path)} ({_baseBitmap?.PixelSize.Width}x{_baseBitmap?.PixelSize.Height})");
+    }
+
+    private async void OnOpenFrmAsync(RoutedEventArgs _)
+    {
+        if (_exportPalette is null)
+        {
+            SetStatus("Open an ACT palette before opening a FRM, so the indexed colors can be previewed correctly.");
+            return;
+        }
+
+        string? path = await PickOpenFileAsync("Open static FRM", new[] { "*.frm" });
+        if (path is null) return;
+
+        try
+        {
+            LoadFrmAsBaseImage(path);
+            FrmFrame frame = new FrmReader().Read(path).FirstFrame;
+            SetStatus($"Opened FRM: {Path.GetFileName(path)} ({frame.Width}x{frame.Height})");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not open FRM: {ex.Message}");
+        }
     }
 
     private async void OnOpenAafAsync(RoutedEventArgs _)
@@ -367,10 +395,54 @@ public sealed class MainWindow : Window
         string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" });
         if (path is null) return;
 
-        using SixLabors.ImageSharp.Image<Rgba32> output = ComposeOutputImage();
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
+
+        if (!string.IsNullOrWhiteSpace(_sourceFrmPath) && File.Exists(_sourceFrmPath))
+        {
+            FrmFile frm = new FrmReader().Read(_sourceFrmPath);
+            IndexedImage indexed = ComposeIndexedOutputFromFrm(frm);
+            new IndexedBmp8Writer().Write(path, indexed, _exportPalette);
+            SetStatus($"Exported 8-bit BMP from FRM indices: {path} using palette {Path.GetFileName(_exportPalettePath)}");
+            return;
+        }
+
+        using SixLabors.ImageSharp.Image<Rgba32> output = ComposeOutputImage();
         SaveIndexedBmp8(path, output, _exportPalette);
         SetStatus($"Exported 8-bit BMP: {path} using palette {Path.GetFileName(_exportPalettePath)}");
+    }
+
+    private async void OnExportFrmAsync(RoutedEventArgs _)
+    {
+        if (!CanExportComposition()) return;
+
+        if (_exportPalette is null)
+        {
+            SetStatus("Open an ACT palette first.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_sourceFrmPath) || !File.Exists(_sourceFrmPath))
+        {
+            SetStatus("Open a source FRM first. Export FRM uses the original FRM as the template.");
+            return;
+        }
+
+        string suggestedName = Path.GetFileNameWithoutExtension(_sourceFrmPath) + "-edited.frm";
+        string? path = await PickSaveFileAsync("Export edited FRM", suggestedName, new[] { "*.frm" });
+        if (path is null) return;
+
+        try
+        {
+            FrmFile original = new FrmReader().Read(_sourceFrmPath);
+            IndexedImage indexed = ComposeIndexedOutputFromFrm(original);
+            FrmFile output = original.CreateStaticCopyWithFirstFramePixels(indexed.Pixels);
+            new FrmWriter().Write(path, output);
+            SetStatus($"Exported FRM: {path}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not export FRM: {ex.Message}");
+        }
     }
 
     private bool CanExportComposition()
@@ -417,7 +489,8 @@ public sealed class MainWindow : Window
         return new UiProjectDocument
         {
             Version = 1,
-            BaseImagePath = MakeProjectPath(_baseImagePath, projectPath),
+            BaseImagePath = MakeProjectPath(_sourceFrmPath is null ? _baseImagePath : null, projectPath),
+            FrmTemplatePath = MakeProjectPath(_sourceFrmPath, projectPath),
             AafFontPath = MakeProjectPath(_fontPath, projectPath),
             ActPalettePath = MakeProjectPath(_exportPalettePath, projectPath),
             Texts = _items.Select(item => new UiTextData
@@ -453,20 +526,6 @@ public sealed class MainWindow : Window
 
         var messages = new List<string>();
 
-        string? baseImagePath = ResolveProjectPath(project.BaseImagePath, projectPath);
-        if (!string.IsNullOrWhiteSpace(baseImagePath))
-        {
-            if (File.Exists(baseImagePath))
-            {
-                LoadBaseImage(baseImagePath);
-                messages.Add($"image {Path.GetFileName(baseImagePath)}");
-            }
-            else
-            {
-                messages.Add($"missing image {project.BaseImagePath}");
-            }
-        }
-
         string? fontPath = ResolveProjectPath(project.AafFontPath, projectPath);
         if (!string.IsNullOrWhiteSpace(fontPath))
         {
@@ -492,6 +551,44 @@ public sealed class MainWindow : Window
             else
             {
                 messages.Add($"missing ACT {project.ActPalettePath}");
+            }
+        }
+
+        string? frmPath = ResolveProjectPath(project.FrmTemplatePath, projectPath);
+        if (!string.IsNullOrWhiteSpace(frmPath))
+        {
+            if (File.Exists(frmPath))
+            {
+                if (_exportPalette is not null)
+                {
+                    LoadFrmAsBaseImage(frmPath);
+                    messages.Add($"FRM {Path.GetFileName(frmPath)}");
+                }
+                else
+                {
+                    messages.Add($"FRM needs ACT palette {project.FrmTemplatePath}");
+                }
+            }
+            else
+            {
+                messages.Add($"missing FRM {project.FrmTemplatePath}");
+            }
+        }
+        else
+        {
+            string? baseImagePath = ResolveProjectPath(project.BaseImagePath, projectPath);
+            if (!string.IsNullOrWhiteSpace(baseImagePath))
+            {
+                if (File.Exists(baseImagePath))
+                {
+                    _sourceFrmPath = null;
+                    LoadBaseImage(baseImagePath);
+                    messages.Add($"image {Path.GetFileName(baseImagePath)}");
+                }
+                else
+                {
+                    messages.Add($"missing image {project.BaseImagePath}");
+                }
             }
         }
 
@@ -567,6 +664,7 @@ public sealed class MainWindow : Window
         _eraseList.SelectedItem = null;
         _itemsList.ItemsSource = null;
         _eraseList.ItemsSource = null;
+        _sourceFrmPath = null;
     }
 
     private void LoadBaseImage(string path)
@@ -584,6 +682,59 @@ public sealed class MainWindow : Window
         {
             UpdateEraseVisual(area);
         }
+    }
+
+    private void LoadFrmAsBaseImage(string path)
+    {
+        if (_exportPalette is null)
+        {
+            throw new InvalidOperationException("ACT palette must be loaded before opening a FRM.");
+        }
+
+        FrmFile frm = new FrmReader().Read(path);
+        if (!frm.IsStaticSingleFrame)
+        {
+            throw new FrmException("The visual editor currently supports static/single-frame FRM files only.");
+        }
+
+        FrmFrame frame = frm.FirstFrame;
+        using SixLabors.ImageSharp.Image<Rgba32> preview = RenderIndexedFrameToRgba(frame, _exportPalette);
+        string previewPath = CreateTemporaryFrmPreviewPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(previewPath) ?? Directory.GetCurrentDirectory());
+        using (FileStream stream = File.Create(previewPath))
+        {
+            preview.Save(stream, new PngEncoder());
+        }
+
+        LoadBaseImage(previewPath);
+        _sourceFrmPath = path;
+    }
+
+    private static string CreateTemporaryFrmPreviewPath(string frmPath)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "fallout-ui-editor");
+        string fileName = Path.GetFileNameWithoutExtension(frmPath) + "-" + Guid.NewGuid().ToString("N") + ".png";
+        return Path.Combine(directory, fileName);
+    }
+
+    private static SixLabors.ImageSharp.Image<Rgba32> RenderIndexedFrameToRgba(FrmFrame frame, IReadOnlyList<Rgba32> palette)
+    {
+        if (palette.Count < 256)
+        {
+            throw new ArgumentException("The palette must contain 256 colors.", nameof(palette));
+        }
+
+        var image = new SixLabors.ImageSharp.Image<Rgba32>(frame.Width, frame.Height);
+        for (int y = 0; y < frame.Height; y++)
+        {
+            for (int x = 0; x < frame.Width; x++)
+            {
+                byte index = frame.Pixels[y * frame.Width + x];
+                image[x, y] = palette[index];
+            }
+        }
+
+        return image;
     }
 
     private void LoadAafFont(string path)
@@ -1346,6 +1497,84 @@ public sealed class MainWindow : Window
         e.Handled = true;
     }
 
+    private IndexedImage ComposeIndexedOutputFromFrm(FrmFile frm)
+    {
+        if (!frm.IsStaticSingleFrame)
+        {
+            throw new FrmException("The visual editor currently exports static/single-frame FRM files only.");
+        }
+
+        if (_exportPalette is null)
+        {
+            throw new InvalidOperationException("ACT palette is not loaded.");
+        }
+
+        FrmFrame frame = frm.FirstFrame;
+        byte[] pixels = frame.Pixels.ToArray();
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            ApplyErasePatchIndexed(pixels, frame.Width, frame.Height, frame.Pixels, area);
+        }
+
+        var indexCache = new Dictionary<uint, byte>();
+        foreach (UiTextItem item in _items)
+        {
+            using SixLabors.ImageSharp.Image<Rgba32> textImage = RenderItem(item);
+            int drawX = GetAlignedX(item, textImage.Width);
+            CompositeIndexedText(pixels, frame.Width, frame.Height, textImage, drawX, item.Y, _exportPalette, indexCache);
+        }
+
+        return new IndexedImage(frame.Width, frame.Height, pixels);
+    }
+
+    private static void ApplyErasePatchIndexed(byte[] destination, int width, int height, byte[] source, EraseArea area)
+    {
+        for (int y = 0; y < area.Height; y++)
+        {
+            int targetY = area.Y + y;
+            if (targetY < 0 || targetY >= height) continue;
+
+            int sourceY = Clamp(area.SourceY + y, 0, height - 1);
+            for (int x = 0; x < area.Width; x++)
+            {
+                int targetX = area.X + x;
+                if (targetX < 0 || targetX >= width) continue;
+
+                int sourceX = Clamp(area.SourceX + x, 0, width - 1);
+                destination[targetY * width + targetX] = source[sourceY * width + sourceX];
+            }
+        }
+    }
+
+    private static void CompositeIndexedText(
+        byte[] destination,
+        int width,
+        int height,
+        SixLabors.ImageSharp.Image<Rgba32> source,
+        int offsetX,
+        int offsetY,
+        IReadOnlyList<Rgba32> palette,
+        Dictionary<uint, byte> indexCache)
+    {
+        for (int y = 0; y < source.Height; y++)
+        {
+            int targetY = offsetY + y;
+            if (targetY < 0 || targetY >= height) continue;
+
+            for (int x = 0; x < source.Width; x++)
+            {
+                int targetX = offsetX + x;
+                if (targetX < 0 || targetX >= width) continue;
+
+                Rgba32 pixel = source[x, y];
+                if (pixel.A == 0) continue;
+
+                destination[targetY * width + targetX] = FindNearestPaletteIndex(pixel, palette, indexCache);
+            }
+        }
+    }
+
     private static void ApplyErasePatch(SixLabors.ImageSharp.Image<Rgba32> destination, SixLabors.ImageSharp.Image<Rgba32> source, EraseArea area)
     {
         for (int y = 0; y < area.Height; y++)
@@ -1564,6 +1793,7 @@ public sealed class MainWindow : Window
     {
         public int Version { get; set; } = 1;
         public string? BaseImagePath { get; set; }
+        public string? FrmTemplatePath { get; set; }
         public string? AafFontPath { get; set; }
         public string? ActPalettePath { get; set; }
         public List<UiTextData> Texts { get; set; } = new();
