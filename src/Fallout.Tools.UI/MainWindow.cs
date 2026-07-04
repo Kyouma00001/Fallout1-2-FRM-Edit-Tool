@@ -345,6 +345,7 @@ public sealed class MainWindow : Window
         groups.Children.Add(BuildToolbarGroup("Export",
             MakeButton("Export BMP 8-bit", OnExportBmp8Async),
             MakeButton("Export FRM", OnExportFrmAsync),
+            MakeButton("BMP -> FRM", OnImportBmpToFrmAsync),
             MakeButton("Export PNG preview", OnExportPngAsync)));
 
         groups.Children.Add(BuildToolbarGroup("Zoom",
@@ -873,6 +874,63 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"Could not export FRM: {ex.Message}");
+        }
+    }
+
+        private async void OnImportBmpToFrmAsync(RoutedEventArgs _)
+    {
+        string? sourceFrmPath = await PickOpenFileAsync("Open source/template FRM", new[] { "*.frm" }, DirectoryKeyFrm);
+        if (sourceFrmPath is null)
+        {
+            return;
+        }
+
+        string? editedBmpPath = await PickOpenFileAsync("Open edited indexed BMP", new[] { "*.bmp" }, DirectoryKeyExportBmp);
+        if (editedBmpPath is null)
+        {
+            return;
+        }
+
+        string suggestedName = Path.GetFileNameWithoutExtension(sourceFrmPath) + "-from-bmp.frm";
+        string? outputFrmPath = await PickSaveFileAsync("Export FRM from BMP", suggestedName, new[] { "*.frm" }, DirectoryKeyExportFrm);
+        if (outputFrmPath is null)
+        {
+            return;
+        }
+
+        if (IsSamePath(sourceFrmPath, outputFrmPath))
+        {
+            SetStatus("Choose a different FRM output path. The editor will not overwrite the source/template FRM directly.");
+            return;
+        }
+
+        try
+        {
+            FrmFile original = new FrmReader().Read(sourceFrmPath);
+            if (!original.IsStaticSingleFrame)
+            {
+                SetStatus("BMP -> FRM currently supports static/single-frame FRM templates only.");
+                return;
+            }
+
+            FrmFrame frame = original.FirstFrame;
+            IndexedImage bmp = new IndexedBmp8Reader().Read(editedBmpPath);
+
+            if (bmp.Width != frame.Width || bmp.Height != frame.Height)
+            {
+                SetStatus($"Edited BMP size is {bmp.Width}x{bmp.Height}, but the template FRM frame is {frame.Width}x{frame.Height}. Use the exact same dimensions.");
+                return;
+            }
+
+            FrmFile output = original.CreateStaticCopyWithFirstFramePixels(bmp.Pixels);
+            Directory.CreateDirectory(Path.GetDirectoryName(outputFrmPath) ?? Directory.GetCurrentDirectory());
+            new FrmWriter().Write(outputFrmPath, output);
+
+            SetStatus($"Exported FRM from BMP: {outputFrmPath}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not export FRM from BMP: {ex.Message}");
         }
     }
 
