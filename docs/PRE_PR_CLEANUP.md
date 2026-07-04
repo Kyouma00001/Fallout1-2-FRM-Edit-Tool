@@ -1,4 +1,4 @@
-# Pre-PR Cleanup
+﻿# Pre-PR Cleanup
 
 Use this checklist before opening a pull request from the polish/release branch.
 

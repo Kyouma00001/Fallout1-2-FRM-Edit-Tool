@@ -1,4 +1,4 @@
-# Release Checklist
+﻿# Release Checklist
 
 This project is not packaged as a user-facing release yet. Use this checklist before creating release artifacts.
 
