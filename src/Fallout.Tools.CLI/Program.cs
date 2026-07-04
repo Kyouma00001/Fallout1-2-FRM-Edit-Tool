@@ -312,6 +312,11 @@ internal static class Program
         string editedBmpPath = args[1];
         string outputFrmPath = args[2];
 
+        if (IsSamePath(originalFrmPath, outputFrmPath))
+        {
+            throw new ArgumentException("Refusing to overwrite the original FRM. Choose a different output path.");
+        }
+
         FrmFile original = new FrmReader().Read(originalFrmPath);
         if (!original.IsStaticSingleFrame)
         {
@@ -511,6 +516,22 @@ internal static class Program
     private static bool HasFlag(string[] args, string flag)
     {
         return args.Any(x => x.Equals(flag, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSamePath(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+
+        try
+        {
+            string fullLeft = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string fullRight = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(fullLeft, fullRight, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static bool IsHelp(string value)

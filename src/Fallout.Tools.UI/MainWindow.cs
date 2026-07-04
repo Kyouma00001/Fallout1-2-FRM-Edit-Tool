@@ -24,6 +24,8 @@ namespace Fallout.Tools.UI;
 public sealed class MainWindow : Window
 {
     private readonly Canvas _canvas = new();
+    private readonly Canvas _zoomHost = new();
+    private readonly ScrollViewer _canvasScroll = new();
     private readonly AvaloniaImage _baseImage = new();
     private readonly ListBox _itemsList = new();
     private readonly ListBox _eraseList = new();
@@ -49,6 +51,28 @@ public sealed class MainWindow : Window
 
     private readonly TextBlock _status = new() { Text = "Open a base image and an AAF font to start." };
 
+    private readonly TextBlock _assetSummary = new();
+    private readonly TextBlock _frmIndicator = new();
+    private readonly TextBlock _aafIndicator = new();
+    private readonly TextBlock _actIndicator = new();
+    private readonly TextBlock _zoomLabel = new() { Text = "Zoom: 100%" };
+
+    private readonly EditorSettings _settings = EditorSettings.Load();
+    private double _zoom = 1.0;
+    private bool _isPanning;
+    private AvaloniaPoint _panStartPoint;
+    private Vector _panStartOffset;
+
+    private static readonly IBrush WindowBackgroundBrush = new SolidColorBrush(Color.Parse("#1B1713"));
+    private static readonly IBrush PanelBackgroundBrush = new SolidColorBrush(Color.Parse("#2A221B"));
+    private static readonly IBrush PanelInnerBrush = new SolidColorBrush(Color.Parse("#1F1914"));
+    private static readonly IBrush AccentBrush = new SolidColorBrush(Color.Parse("#B7813E"));
+    private static readonly IBrush AccentDimBrush = new SolidColorBrush(Color.Parse("#6F542F"));
+    private static readonly IBrush TextBrush = new SolidColorBrush(Color.Parse("#E7D2A5"));
+    private static readonly IBrush MutedBrush = new SolidColorBrush(Color.Parse("#BCA47A"));
+    private static readonly IBrush OkBrush = new SolidColorBrush(Color.Parse("#9ACD5A"));
+    private static readonly IBrush WarningBrush = new SolidColorBrush(Color.Parse("#D6A24D"));
+
     private readonly List<UiTextItem> _items = new();
     private readonly List<EraseArea> _eraseAreas = new();
     private string? _baseImagePath;
@@ -73,6 +97,15 @@ public sealed class MainWindow : Window
     private double _dragStartHeightScale;
 
     private const double ResizeHandleSize = 8;
+    private const string DirectoryKeyImage = "image";
+    private const string DirectoryKeyFrm = "frm";
+    private const string DirectoryKeyAaf = "aaf";
+    private const string DirectoryKeyAct = "act";
+    private const string DirectoryKeyProject = "project";
+    private const string DirectoryKeyLayout = "layout";
+    private const string DirectoryKeyExportBmp = "export-bmp";
+    private const string DirectoryKeyExportFrm = "export-frm";
+    private const string DirectoryKeyExportPng = "export-png";
 
     private static readonly JsonSerializerOptions ProjectJsonOptions = new()
     {
@@ -82,90 +115,122 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "Fallout UI Text Layout Editor";
-        Width = 1200;
-        Height = 760;
-        MinWidth = 900;
-        MinHeight = 600;
+        Title = "Fallout 1/2 UI Workshop";
+        Width = 1320;
+        Height = 820;
+        MinWidth = 980;
+        MinHeight = 680;
+        Background = WindowBackgroundBrush;
         Focusable = true;
         KeyDown += OnEditorKeyDown;
 
         _alignBox.ItemsSource = new[] { "left", "center", "right" };
         _alignBox.SelectedIndex = 0;
+        _zoom = ClampZoom(_settings.Zoom);
+
+        ApplyThemeToInputs();
+        RefreshAssetIndicators();
 
         Content = BuildLayout();
         _baseImage.Stretch = Stretch.None;
         SetZIndex(_baseImage, 0);
+        _canvas.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative);
+        _zoomHost.Children.Add(_canvas);
+        _zoomHost.PointerWheelChanged += OnZoomHostPointerWheelChanged;
+        _zoomHost.PointerPressed += OnPanPointerPressed;
+        _zoomHost.PointerMoved += OnPanPointerMoved;
+        _zoomHost.PointerReleased += OnPanPointerReleased;
         _canvas.Children.Add(_baseImage);
+        ApplyZoom(saveSettings: false);
     }
 
     private Control BuildLayout()
     {
         var root = new Grid
         {
-            RowDefinitions = new RowDefinitions("Auto,*"),
-            ColumnDefinitions = new ColumnDefinitions("*,300"),
-            Margin = new Thickness(8)
+            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("*,340"),
+            Margin = new Thickness(10)
         };
 
-        var toolbar = new StackPanel
+        var header = new AvaloniaBorder
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Margin = new Thickness(0, 0, 0, 8)
+            Background = PanelBackgroundBrush,
+            BorderBrush = AccentBrush,
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(12),
+            Child = new StackPanel
+            {
+                Spacing = 10,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Fallout UI Workshop",
+                        FontSize = 22,
+                        FontWeight = FontWeight.Bold,
+                        Foreground = TextBrush
+                    },
+                    new TextBlock
+                    {
+                        Text = "Visual editor for static Fallout 1/2 UI FRM translation, BMP export, and safe FRM re-export.",
+                        Foreground = MutedBrush,
+                        TextWrapping = TextWrapping.Wrap
+                    },
+                    BuildToolbarGroups(),
+                    BuildStatusStrip()
+                }
+            }
         };
 
-        toolbar.Children.Add(MakeButton("Open image", OnOpenImageAsync));
-        toolbar.Children.Add(MakeButton("Open FRM", OnOpenFrmAsync));
-        toolbar.Children.Add(MakeButton("Open AAF", OnOpenAafAsync));
-        toolbar.Children.Add(MakeButton("Open ACT", OnOpenActAsync));
-        toolbar.Children.Add(MakeButton("Add text", _ => AddTextItem()));
-        toolbar.Children.Add(MakeButton("Add erase", _ => AddEraseArea()));
-        toolbar.Children.Add(MakeButton("Remove", _ => RemoveSelected()));
-        toolbar.Children.Add(MakeButton("Open project", OnOpenProjectAsync));
-        toolbar.Children.Add(MakeButton("Save project", OnSaveProjectAsync));
-        toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
-        toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
-        toolbar.Children.Add(MakeButton("Export FRM", OnExportFrmAsync));
-        toolbar.Children.Add(MakeButton("Export PNG preview", OnExportPngAsync));
+        Grid.SetColumnSpan(header, 2);
+        root.Children.Add(header);
 
-        Grid.SetColumnSpan(toolbar, 2);
-        root.Children.Add(toolbar);
-
-        var scroll = new ScrollViewer
+        _canvasScroll.Background = Brushes.Black;
+        _canvasScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _canvasScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _canvasScroll.Content = new AvaloniaBorder
         {
-            Background = Brushes.Black,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = _canvas
+            Background = new SolidColorBrush(Color.Parse("#11100E")),
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(2),
+            Padding = new Thickness(10),
+            Child = _zoomHost
         };
 
-        Grid.SetRow(scroll, 1);
-        Grid.SetColumn(scroll, 0);
-        root.Children.Add(scroll);
+        Grid.SetRow(_canvasScroll, 1);
+        Grid.SetColumn(_canvasScroll, 0);
+        root.Children.Add(_canvasScroll);
 
         var panel = BuildSidePanel();
         Grid.SetRow(panel, 1);
         Grid.SetColumn(panel, 1);
         root.Children.Add(panel);
 
+        var footer = new AvaloniaBorder
+        {
+            Background = PanelBackgroundBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10, 6),
+            Child = _status
+        };
+        Grid.SetRow(footer, 2);
+        Grid.SetColumnSpan(footer, 2);
+        root.Children.Add(footer);
+
         return root;
     }
 
     private Control BuildSidePanel()
     {
-        var panel = new StackPanel
+        var content = new StackPanel
         {
-            Spacing = 8,
-            Margin = new Thickness(10, 0, 0, 0)
+            Spacing = 10,
+            Margin = new Thickness(12, 0, 0, 0)
         };
-
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Text objects",
-            FontWeight = FontWeight.Bold,
-            FontSize = 16
-        });
 
         _itemsList.Height = 160;
         _itemsList.SelectionChanged += (_, _) =>
@@ -175,29 +240,6 @@ public sealed class MainWindow : Window
                 SelectItem(item);
             }
         };
-        panel.Children.Add(_itemsList);
-
-        panel.Children.Add(new Separator());
-        panel.Children.Add(Labeled("Name", _nameBox));
-        panel.Children.Add(Labeled("Text", _textBox));
-        panel.Children.Add(Labeled("X", _xBox));
-        panel.Children.Add(Labeled("Y", _yBox));
-        panel.Children.Add(Labeled("Width (0 = natural)", _widthBox));
-        panel.Children.Add(Labeled("Scale (integer)", _scaleBox));
-        panel.Children.Add(Labeled("Width scale", _widthScaleBox));
-        panel.Children.Add(Labeled("Height scale", _heightScaleBox));
-        panel.Children.Add(Labeled("Letter spacing", _letterSpacingBox));
-        panel.Children.Add(Labeled("Align", _alignBox));
-        panel.Children.Add(_uppercaseBox);
-        panel.Children.Add(MakeButton("Apply text changes", _ => ApplyEditorFieldsToSelected()));
-
-        panel.Children.Add(new Separator());
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Erase / clone patches",
-            FontWeight = FontWeight.Bold,
-            FontSize = 16
-        });
 
         _eraseList.Height = 120;
         _eraseList.SelectionChanged += (_, _) =>
@@ -207,41 +249,216 @@ public sealed class MainWindow : Window
                 SelectEraseArea(area);
             }
         };
-        panel.Children.Add(_eraseList);
-        panel.Children.Add(Labeled("Erase name", _eraseNameBox));
-        panel.Children.Add(Labeled("Target X", _eraseXBox));
-        panel.Children.Add(Labeled("Target Y", _eraseYBox));
-        panel.Children.Add(Labeled("Target width", _eraseWidthBox));
-        panel.Children.Add(Labeled("Target height", _eraseHeightBox));
-        panel.Children.Add(Labeled("Source X", _eraseSourceXBox));
-        panel.Children.Add(Labeled("Source Y", _eraseSourceYBox));
-        panel.Children.Add(MakeButton("Add erase patch", _ => AddEraseArea()));
-        panel.Children.Add(MakeButton("Apply erase changes", _ => ApplyEraseFieldsToSelected()));
 
-        panel.Children.Add(new Separator());
-        panel.Children.Add(new TextBlock
+        content.Children.Add(BuildSection("Project status", new StackPanel
         {
-            Text = "Tip: erase patches clone a clean area of the base image over old text before the translated text is rendered. Drag a patch to move it, drag its handle to resize it, and adjust Source X/Y to choose where the clean texture comes from.",
-            TextWrapping = TextWrapping.Wrap
-        });
-        panel.Children.Add(_status);
+            Spacing = 6,
+            Children =
+            {
+                MakeIndicatorLine("FRM / base", _frmIndicator),
+                MakeIndicatorLine("AAF font", _aafIndicator),
+                MakeIndicatorLine("ACT palette", _actIndicator),
+                new TextBlock { Text = "Use Check project before exporting. The editor will refuse unsafe overwrite paths.", Foreground = MutedBrush, TextWrapping = TextWrapping.Wrap }
+            }
+        }));
+
+        content.Children.Add(BuildSection("Text objects", new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                _itemsList,
+                Labeled("Name", _nameBox),
+                Labeled("Text", _textBox),
+                Labeled("X", _xBox),
+                Labeled("Y", _yBox),
+                Labeled("Width (0 = natural)", _widthBox),
+                Labeled("Scale (integer)", _scaleBox),
+                Labeled("Width scale", _widthScaleBox),
+                Labeled("Height scale", _heightScaleBox),
+                Labeled("Letter spacing", _letterSpacingBox),
+                Labeled("Align", _alignBox),
+                _uppercaseBox,
+                MakeButton("Apply text changes", _ => ApplyEditorFieldsToSelected())
+            }
+        }));
+
+        content.Children.Add(BuildSection("Erase / clone patches", new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                _eraseList,
+                Labeled("Erase name", _eraseNameBox),
+                Labeled("Target X", _eraseXBox),
+                Labeled("Target Y", _eraseYBox),
+                Labeled("Target width", _eraseWidthBox),
+                Labeled("Target height", _eraseHeightBox),
+                Labeled("Source X", _eraseSourceXBox),
+                Labeled("Source Y", _eraseSourceYBox),
+                MakeButton("Add erase patch", _ => AddEraseArea()),
+                MakeButton("Apply erase changes", _ => ApplyEraseFieldsToSelected())
+            }
+        }));
+
+        content.Children.Add(BuildSection("Operator notes", new TextBlock
+        {
+            Text = "Erase patches clone a clean area of the base image over old text before the translated text is rendered. Drag a patch to move it, drag its handle to resize it, and adjust Source X/Y to choose where the clean texture comes from.",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = MutedBrush
+        }));
 
         return new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = panel
+            Content = content
         };
     }
 
-    private static Control Labeled(string label, Control control)
+    private Control BuildToolbarGroups()
+    {
+        var groups = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            ItemHeight = double.NaN,
+            ItemWidth = double.NaN
+        };
+
+        groups.Children.Add(BuildToolbarGroup("File",
+            MakeButton("Open image", OnOpenImageAsync),
+            MakeButton("Open FRM", OnOpenFrmAsync),
+            MakeButton("Open project", OnOpenProjectAsync),
+            MakeButton("Save project", OnSaveProjectAsync),
+            MakeButton("Save layout", OnSaveLayoutAsync)));
+
+        groups.Children.Add(BuildToolbarGroup("Assets",
+            MakeButton("Open AAF", OnOpenAafAsync),
+            MakeButton("Open ACT", OnOpenActAsync)));
+
+        groups.Children.Add(BuildToolbarGroup("Edit",
+            MakeButton("Add text", _ => AddTextItem()),
+            MakeButton("Add erase", _ => AddEraseArea()),
+            MakeButton("Remove", _ => RemoveSelected()),
+            MakeButton("Check project", _ => CheckProject())));
+
+        groups.Children.Add(BuildToolbarGroup("Export",
+            MakeButton("Export BMP 8-bit", OnExportBmp8Async),
+            MakeButton("Export FRM", OnExportFrmAsync),
+            MakeButton("Export PNG preview", OnExportPngAsync)));
+
+        groups.Children.Add(BuildToolbarGroup("Zoom",
+            MakeButton("Zoom -", _ => ZoomOut()),
+            MakeButton("100%", _ => ResetZoom()),
+            MakeButton("Zoom +", _ => ZoomIn()),
+            _zoomLabel));
+
+        return groups;
+    }
+
+    private Control BuildToolbarGroup(string title, params Control[] controls)
+    {
+        var buttonPanel = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+
+        foreach (Control control in controls)
+        {
+            buttonPanel.Children.Add(control);
+        }
+
+        return new AvaloniaBorder
+        {
+            Background = PanelInnerBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Margin = new Thickness(0, 0, 10, 0),
+            Padding = new Thickness(8),
+            Child = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = title, Foreground = TextBrush, FontWeight = FontWeight.Bold },
+                    buttonPanel
+                }
+            }
+        };
+    }
+
+    private Control BuildStatusStrip()
+    {
+        return new AvaloniaBorder
+        {
+            Background = PanelInnerBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8, 6),
+            Child = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    _assetSummary,
+                    new TextBlock
+                    {
+                        Text = "Theme inspired by Fallout 1/2 terminals and industrial UI panels.",
+                        Foreground = MutedBrush,
+                        FontSize = 12
+                    }
+                }
+            }
+        };
+    }
+
+    private Control BuildSection(string title, Control content)
+    {
+        return new AvaloniaBorder
+        {
+            Background = PanelBackgroundBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = title, FontWeight = FontWeight.Bold, FontSize = 15, Foreground = TextBrush },
+                    content
+                }
+            }
+        };
+    }
+
+    private Control MakeIndicatorLine(string label, TextBlock valueText)
+    {
+        valueText.Foreground = WarningBrush;
+        valueText.FontWeight = FontWeight.SemiBold;
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*")
+        };
+        grid.Children.Add(new TextBlock { Text = label + ": ", Foreground = TextBrush });
+        Grid.SetColumn(valueText, 1);
+        grid.Children.Add(valueText);
+        return grid;
+    }
+
+    private Control Labeled(string label, Control control)
     {
         return new StackPanel
         {
-            Spacing = 2,
+            Spacing = 3,
             Children =
             {
-                new TextBlock { Text = label },
+                new TextBlock { Text = label, Foreground = TextBrush },
                 control
             }
         };
@@ -252,15 +469,211 @@ public sealed class MainWindow : Window
         var button = new Button
         {
             Content = text,
-            Padding = new Thickness(10, 4)
+            Padding = new Thickness(10, 5),
+            Margin = new Thickness(0, 0, 6, 6),
+            Background = new SolidColorBrush(Color.Parse("#4A3420")),
+            Foreground = new SolidColorBrush(Color.Parse("#F2DCB0")),
+            BorderBrush = new SolidColorBrush(Color.Parse("#B7813E")),
+            BorderThickness = new Thickness(1)
         };
         button.Click += (_, e) => onClick(e);
         return button;
     }
 
+    private void ApplyThemeToInputs()
+    {
+        foreach (Control control in new Control[]
+        {
+            _nameBox, _textBox, _xBox, _yBox, _widthBox, _scaleBox, _widthScaleBox, _heightScaleBox, _letterSpacingBox,
+            _eraseNameBox, _eraseXBox, _eraseYBox, _eraseWidthBox, _eraseHeightBox, _eraseSourceXBox, _eraseSourceYBox,
+            _itemsList, _eraseList, _alignBox, _uppercaseBox
+        })
+        {
+            if (control is TemplatedControl templated)
+            {
+                templated.Background = PanelInnerBrush;
+                templated.Foreground = TextBrush;
+                templated.BorderBrush = AccentDimBrush;
+            }
+        }
+
+        _status.Foreground = TextBrush;
+        _status.TextWrapping = TextWrapping.Wrap;
+        _assetSummary.Foreground = MutedBrush;
+        _assetSummary.TextWrapping = TextWrapping.Wrap;
+        _zoomLabel.Foreground = TextBrush;
+        _zoomLabel.VerticalAlignment = VerticalAlignment.Center;
+        _zoomLabel.Margin = new Thickness(4, 0, 0, 6);
+    }
+
+    private void RefreshAssetIndicators()
+    {
+        _frmIndicator.Text = _sourceFrmPath is not null ? Path.GetFileName(_sourceFrmPath) : _baseImagePath is not null ? Path.GetFileName(_baseImagePath) : "not loaded";
+        _frmIndicator.Foreground = (_sourceFrmPath is not null || _baseImagePath is not null) ? OkBrush : WarningBrush;
+
+        _aafIndicator.Text = _fontPath is not null ? Path.GetFileName(_fontPath) : "not loaded";
+        _aafIndicator.Foreground = _fontPath is not null ? OkBrush : WarningBrush;
+
+        _actIndicator.Text = _exportPalettePath is not null ? Path.GetFileName(_exportPalettePath) : "not loaded";
+        _actIndicator.Foreground = _exportPalettePath is not null ? OkBrush : WarningBrush;
+
+        int warningCount = GetProjectWarnings().Count;
+        _assetSummary.Text = warningCount == 0 ? "Project status: ready for export." : $"Project status: {warningCount} warning(s). Use Check project for details.";
+        _assetSummary.Foreground = warningCount == 0 ? OkBrush : WarningBrush;
+    }
+
+    private void ZoomIn()
+    {
+        SetZoom(_zoom * 1.25);
+    }
+
+    private void ZoomOut()
+    {
+        SetZoom(_zoom / 1.25);
+    }
+
+    private void ResetZoom()
+    {
+        SetZoom(1.0);
+    }
+
+    private void OnZoomHostPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (_baseBitmap is null)
+        {
+            return;
+        }
+
+        double oldZoom = _zoom;
+        double zoomFactor = e.Delta.Y > 0 ? 1.1 : 1.0 / 1.1;
+
+        AvaloniaPoint pointerInScroll = e.GetPosition(_canvasScroll);
+        Vector oldOffset = _canvasScroll.Offset;
+
+        double imageX = (oldOffset.X + pointerInScroll.X) / oldZoom;
+        double imageY = (oldOffset.Y + pointerInScroll.Y) / oldZoom;
+
+        SetZoom(oldZoom * zoomFactor);
+
+        double newOffsetX = imageX * _zoom - pointerInScroll.X;
+        double newOffsetY = imageY * _zoom - pointerInScroll.Y;
+
+        _canvasScroll.Offset = ClampScrollOffset(new Vector(newOffsetX, newOffsetY));
+        e.Handled = true;
+    }
+
+    private void OnPanPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_baseBitmap is null)
+        {
+            return;
+        }
+
+        PointerPoint point = e.GetCurrentPoint(_zoomHost);
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        _isPanning = true;
+        _panStartPoint = e.GetPosition(_canvasScroll);
+        _panStartOffset = _canvasScroll.Offset;
+
+        e.Pointer.Capture(_zoomHost);
+        e.Handled = true;
+    }
+
+    private void OnPanPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_isPanning || e.Pointer.Captured != _zoomHost)
+        {
+            return;
+        }
+
+        AvaloniaPoint currentPoint = e.GetPosition(_canvasScroll);
+        double deltaX = currentPoint.X - _panStartPoint.X;
+        double deltaY = currentPoint.Y - _panStartPoint.Y;
+
+        _canvasScroll.Offset = ClampScrollOffset(new Vector(
+            _panStartOffset.X - deltaX,
+            _panStartOffset.Y - deltaY));
+
+        e.Handled = true;
+    }
+
+    private void OnPanPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!_isPanning)
+        {
+            return;
+        }
+
+        _isPanning = false;
+        e.Pointer.Capture(null);
+        e.Handled = true;
+    }
+
+    private Vector ClampScrollOffset(Vector offset)
+    {
+        double maxX = Math.Max(0, _zoomHost.Bounds.Width - _canvasScroll.Viewport.Width);
+        double maxY = Math.Max(0, _zoomHost.Bounds.Height - _canvasScroll.Viewport.Height);
+
+        return new Vector(
+            Math.Clamp(offset.X, 0, maxX),
+            Math.Clamp(offset.Y, 0, maxY));
+    }
+
+    private void SetZoom(double zoom)
+    {
+        _zoom = ClampZoom(zoom);
+        ApplyZoom(saveSettings: true);
+    }
+
+    private void ApplyZoom(bool saveSettings)
+    {
+        _canvas.RenderTransform = new ScaleTransform(_zoom, _zoom);
+        UpdateZoomHostSize();
+        _zoomLabel.Text = $"Zoom: {Math.Round(_zoom * 100)}%";
+
+        if (saveSettings)
+        {
+            _settings.Zoom = _zoom;
+            SaveEditorSettings();
+        }
+    }
+
+    private void UpdateZoomHostSize()
+    {
+        double width = _canvas.Width;
+        double height = _canvas.Height;
+
+        if (double.IsNaN(width) || width <= 0)
+        {
+            width = _baseBitmap?.PixelSize.Width ?? 1;
+        }
+
+        if (double.IsNaN(height) || height <= 0)
+        {
+            height = _baseBitmap?.PixelSize.Height ?? 1;
+        }
+
+        _zoomHost.Width = Math.Max(1, width * _zoom);
+        _zoomHost.Height = Math.Max(1, height * _zoom);
+    }
+
+    private static double ClampZoom(double zoom)
+    {
+        if (double.IsNaN(zoom) || double.IsInfinity(zoom))
+        {
+            return 1.0;
+        }
+
+        return Math.Clamp(zoom, 0.25, 8.0);
+    }
+
     private async void OnOpenImageAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open clean UI image", new[] { "*.png", "*.bmp" });
+        string? path = await PickOpenFileAsync("Open clean UI image", new[] { "*.png", "*.bmp" }, DirectoryKeyImage);
         if (path is null) return;
 
         _sourceFrmPath = null;
@@ -276,7 +689,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? path = await PickOpenFileAsync("Open static FRM", new[] { "*.frm" });
+        string? path = await PickOpenFileAsync("Open static FRM", new[] { "*.frm" }, DirectoryKeyFrm);
         if (path is null) return;
 
         try
@@ -293,7 +706,7 @@ public sealed class MainWindow : Window
 
     private async void OnOpenAafAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open AAF font", new[] { "*.aaf" });
+        string? path = await PickOpenFileAsync("Open AAF font", new[] { "*.aaf" }, DirectoryKeyAaf);
         if (path is null) return;
 
         LoadAafFont(path);
@@ -302,7 +715,7 @@ public sealed class MainWindow : Window
 
     private async void OnOpenActAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open ACT palette", new[] { "*.act" });
+        string? path = await PickOpenFileAsync("Open ACT palette", new[] { "*.act" }, DirectoryKeyAct);
         if (path is null) return;
 
         try
@@ -318,7 +731,7 @@ public sealed class MainWindow : Window
 
     private async void OnSaveLayoutAsync(RoutedEventArgs _)
     {
-        string? path = await PickSaveFileAsync("Save UI layout", "ui-layout.txt", new[] { "*.txt" });
+        string? path = await PickSaveFileAsync("Save UI layout", "ui-layout.txt", new[] { "*.txt" }, DirectoryKeyLayout);
         if (path is null) return;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
@@ -328,7 +741,7 @@ public sealed class MainWindow : Window
 
     private async void OnSaveProjectAsync(RoutedEventArgs _)
     {
-        string? path = await PickSaveFileAsync("Save Fallout UI project", "ui-project.fui.json", new[] { "*.fui.json", "*.json" });
+        string? path = await PickSaveFileAsync("Save Fallout UI project", "ui-project.fui.json", new[] { "*.fui.json", "*.json" }, DirectoryKeyProject);
         if (path is null) return;
 
         try
@@ -347,7 +760,7 @@ public sealed class MainWindow : Window
 
     private async void OnOpenProjectAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open Fallout UI project", new[] { "*.fui.json", "*.json" });
+        string? path = await PickOpenFileAsync("Open Fallout UI project", new[] { "*.fui.json", "*.json" }, DirectoryKeyProject);
         if (path is null) return;
 
         try
@@ -372,8 +785,14 @@ public sealed class MainWindow : Window
     {
         if (!CanExportComposition()) return;
 
-        string? path = await PickSaveFileAsync("Export composed PNG preview", "ui-composed.png", new[] { "*.png" });
+        string? path = await PickSaveFileAsync("Export composed PNG preview", "ui-composed.png", new[] { "*.png" }, DirectoryKeyExportPng);
         if (path is null) return;
+
+        if (IsSamePath(path, _baseImagePath))
+        {
+            SetStatus("Choose a different PNG output path. The editor will not overwrite the opened base image.");
+            return;
+        }
 
         using SixLabors.ImageSharp.Image<Rgba32> output = ComposeOutputImage();
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
@@ -392,8 +811,14 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" });
+        string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" }, DirectoryKeyExportBmp);
         if (path is null) return;
+
+        if (IsSamePath(path, _baseImagePath))
+        {
+            SetStatus("Choose a different BMP output path. The editor will not overwrite the opened base image.");
+            return;
+        }
 
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
 
@@ -428,8 +853,14 @@ public sealed class MainWindow : Window
         }
 
         string suggestedName = Path.GetFileNameWithoutExtension(_sourceFrmPath) + "-edited.frm";
-        string? path = await PickSaveFileAsync("Export edited FRM", suggestedName, new[] { "*.frm" });
+        string? path = await PickSaveFileAsync("Export edited FRM", suggestedName, new[] { "*.frm" }, DirectoryKeyExportFrm);
         if (path is null) return;
+
+        if (IsSamePath(path, _sourceFrmPath))
+        {
+            SetStatus("Choose a different FRM output path. The editor will not overwrite the source FRM directly.");
+            return;
+        }
 
         try
         {
@@ -449,17 +880,91 @@ public sealed class MainWindow : Window
     {
         if (_baseImagePath is null)
         {
-            SetStatus("Open a base image first.");
+            SetStatus("Open a base image or FRM first.");
             return false;
         }
 
-        if (_font is null)
+        if (_items.Count > 0 && _font is null)
         {
-            SetStatus("Open an AAF font first.");
+            SetStatus("Open an AAF font before exporting text objects.");
             return false;
         }
 
         return true;
+    }
+
+    private void CheckProject()
+    {
+        var messages = new List<string>();
+
+        messages.Add(_sourceFrmPath is not null ? $"FRM: {Path.GetFileName(_sourceFrmPath)}" : _baseImagePath is not null ? $"Image: {Path.GetFileName(_baseImagePath)}" : "No base image/FRM");
+        messages.Add(_exportPalettePath is not null ? $"ACT: {Path.GetFileName(_exportPalettePath)}" : "No ACT palette");
+        messages.Add(_fontPath is not null ? $"AAF: {Path.GetFileName(_fontPath)}" : _items.Count > 0 ? "No AAF font for text" : "No AAF font needed");
+        messages.Add($"Texts: {_items.Count}");
+        messages.Add($"Erase patches: {_eraseAreas.Count}");
+
+        List<string> warnings = GetProjectWarnings();
+        if (warnings.Count > 0)
+        {
+            messages.Add("Warnings: " + string.Join("; ", warnings));
+        }
+        else
+        {
+            messages.Add("Ready for export.");
+        }
+
+        SetStatus(string.Join(" | ", messages));
+    }
+
+    private List<string> GetProjectWarnings()
+    {
+        var warnings = new List<string>();
+
+        if (_baseBitmap is null)
+        {
+            warnings.Add("open a base image or FRM");
+            return warnings;
+        }
+
+        int imageWidth = _baseBitmap.PixelSize.Width;
+        int imageHeight = _baseBitmap.PixelSize.Height;
+
+        if (_items.Count > 0 && _font is null)
+        {
+            warnings.Add("text objects need an AAF font");
+        }
+
+        if (_sourceFrmPath is not null && _exportPalette is null)
+        {
+            warnings.Add("FRM export needs an ACT palette");
+        }
+
+        foreach (UiTextItem item in _items)
+        {
+            int renderedWidth = Math.Max(1, item.RenderedWidth);
+            int renderedHeight = Math.Max(1, item.RenderedHeight);
+            int drawX = GetAlignedX(item, renderedWidth);
+
+            if (drawX < 0 || item.Y < 0 || drawX + renderedWidth > imageWidth || item.Y + renderedHeight > imageHeight)
+            {
+                warnings.Add($"text '{item.Name}' is partly outside the image");
+            }
+        }
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            if (area.X < 0 || area.Y < 0 || area.X + area.Width > imageWidth || area.Y + area.Height > imageHeight)
+            {
+                warnings.Add($"erase patch '{area.Name}' target is partly outside the image");
+            }
+
+            if (area.SourceX < 0 || area.SourceY < 0 || area.SourceX + area.Width > imageWidth || area.SourceY + area.Height > imageHeight)
+            {
+                warnings.Add($"erase patch '{area.Name}' source is partly outside the image");
+            }
+        }
+
+        return warnings;
     }
 
     private SixLabors.ImageSharp.Image<Rgba32> ComposeOutputImage()
@@ -675,6 +1180,7 @@ public sealed class MainWindow : Window
         _baseImage.Source = _baseBitmap;
         _canvas.Width = _baseBitmap.PixelSize.Width;
         _canvas.Height = _baseBitmap.PixelSize.Height;
+        UpdateZoomHostSize();
         Canvas.SetLeft(_baseImage, 0);
         Canvas.SetTop(_baseImage, 0);
 
@@ -789,34 +1295,106 @@ public sealed class MainWindow : Window
         return Path.GetFullPath(Path.Combine(directory, path));
     }
 
-    private async Task<string?> PickOpenFileAsync(string title, IReadOnlyList<string> patterns)
+    private async Task<string?> PickOpenFileAsync(string title, IReadOnlyList<string> patterns, string directoryKey)
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        IStorageFolder? startLocation = await GetSuggestedStartLocationAsync(directoryKey);
+
+        var options = new FilePickerOpenOptions
         {
             Title = title,
             AllowMultiple = false,
+            SuggestedStartLocation = startLocation,
             FileTypeFilter = new[]
             {
                 new FilePickerFileType(title) { Patterns = patterns }
             }
-        });
+        };
 
-        return files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        string? path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        RememberDirectory(directoryKey, path);
+        return path;
     }
 
-    private async Task<string?> PickSaveFileAsync(string title, string suggestedName, IReadOnlyList<string> patterns)
+    private async Task<string?> PickSaveFileAsync(string title, string suggestedName, IReadOnlyList<string> patterns, string directoryKey)
     {
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        IStorageFolder? startLocation = await GetSuggestedStartLocationAsync(directoryKey);
+
+        var options = new FilePickerSaveOptions
         {
             Title = title,
             SuggestedFileName = suggestedName,
+            SuggestedStartLocation = startLocation,
             FileTypeChoices = new[]
             {
                 new FilePickerFileType(title) { Patterns = patterns }
             }
-        });
+        };
 
-        return file?.TryGetLocalPath();
+        var file = await StorageProvider.SaveFilePickerAsync(options);
+        string? path = file?.TryGetLocalPath();
+        RememberDirectory(directoryKey, path);
+        return path;
+    }
+
+    private async Task<IStorageFolder?> GetSuggestedStartLocationAsync(string directoryKey)
+    {
+        string? directory = _settings.GetLastDirectory(directoryKey);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(directory);
+            if (!fullPath.EndsWith(Path.DirectorySeparatorChar) && !fullPath.EndsWith(Path.AltDirectorySeparatorChar))
+            {
+                fullPath += Path.DirectorySeparatorChar;
+            }
+
+            return await StorageProvider.TryGetFolderFromPathAsync(new Uri(fullPath));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void RememberDirectory(string directoryKey, string? selectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(selectedPath))
+        {
+            return;
+        }
+
+        try
+        {
+            string? directory = Path.GetDirectoryName(selectedPath);
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return;
+            }
+
+            _settings.SetLastDirectory(directoryKey, directory);
+            SaveEditorSettings();
+        }
+        catch
+        {
+            // Recent path persistence should never block the editor workflow.
+        }
+    }
+
+    private void SaveEditorSettings()
+    {
+        try
+        {
+            _settings.Save();
+        }
+        catch
+        {
+            // Settings are a convenience only; ignore write errors.
+        }
     }
 
     private void AddTextItem()
@@ -1779,6 +2357,22 @@ public sealed class MainWindow : Window
             item.Text);
     }
 
+    private static bool IsSamePath(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+
+        try
+        {
+            string fullLeft = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string fullRight = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(fullLeft, fullRight, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private static void SetZIndex(Control control, int zIndex)
     {
         control.ZIndex = zIndex;
@@ -1787,6 +2381,7 @@ public sealed class MainWindow : Window
     private void SetStatus(string message)
     {
         _status.Text = message;
+        RefreshAssetIndicators();
     }
 
     private sealed class UiProjectDocument
