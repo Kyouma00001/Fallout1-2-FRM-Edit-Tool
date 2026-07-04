@@ -49,6 +49,21 @@ public sealed class MainWindow : Window
 
     private readonly TextBlock _status = new() { Text = "Open a base image and an AAF font to start." };
 
+    private readonly TextBlock _assetSummary = new();
+    private readonly TextBlock _frmIndicator = new();
+    private readonly TextBlock _aafIndicator = new();
+    private readonly TextBlock _actIndicator = new();
+
+    private static readonly IBrush WindowBackgroundBrush = new SolidColorBrush(Color.Parse("#1B1713"));
+    private static readonly IBrush PanelBackgroundBrush = new SolidColorBrush(Color.Parse("#2A221B"));
+    private static readonly IBrush PanelInnerBrush = new SolidColorBrush(Color.Parse("#1F1914"));
+    private static readonly IBrush AccentBrush = new SolidColorBrush(Color.Parse("#B7813E"));
+    private static readonly IBrush AccentDimBrush = new SolidColorBrush(Color.Parse("#6F542F"));
+    private static readonly IBrush TextBrush = new SolidColorBrush(Color.Parse("#E7D2A5"));
+    private static readonly IBrush MutedBrush = new SolidColorBrush(Color.Parse("#BCA47A"));
+    private static readonly IBrush OkBrush = new SolidColorBrush(Color.Parse("#9ACD5A"));
+    private static readonly IBrush WarningBrush = new SolidColorBrush(Color.Parse("#D6A24D"));
+
     private readonly List<UiTextItem> _items = new();
     private readonly List<EraseArea> _eraseAreas = new();
     private string? _baseImagePath;
@@ -82,16 +97,20 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "Fallout UI Text Layout Editor";
-        Width = 1200;
-        Height = 760;
-        MinWidth = 900;
-        MinHeight = 600;
+        Title = "Fallout 1/2 UI Workshop";
+        Width = 1320;
+        Height = 820;
+        MinWidth = 980;
+        MinHeight = 680;
+        Background = WindowBackgroundBrush;
         Focusable = true;
         KeyDown += OnEditorKeyDown;
 
         _alignBox.ItemsSource = new[] { "left", "center", "right" };
         _alignBox.SelectedIndex = 0;
+
+        ApplyThemeToInputs();
+        RefreshAssetIndicators();
 
         Content = BuildLayout();
         _baseImage.Stretch = Stretch.None;
@@ -103,42 +122,58 @@ public sealed class MainWindow : Window
     {
         var root = new Grid
         {
-            RowDefinitions = new RowDefinitions("Auto,*"),
-            ColumnDefinitions = new ColumnDefinitions("*,300"),
-            Margin = new Thickness(8)
+            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("*,340"),
+            Margin = new Thickness(10)
         };
 
-        var toolbar = new StackPanel
+        var header = new AvaloniaBorder
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Margin = new Thickness(0, 0, 0, 8)
+            Background = PanelBackgroundBrush,
+            BorderBrush = AccentBrush,
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(12),
+            Child = new StackPanel
+            {
+                Spacing = 10,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Fallout UI Workshop",
+                        FontSize = 22,
+                        FontWeight = FontWeight.Bold,
+                        Foreground = TextBrush
+                    },
+                    new TextBlock
+                    {
+                        Text = "Visual editor for static Fallout 1/2 UI FRM translation, BMP export, and safe FRM re-export.",
+                        Foreground = MutedBrush,
+                        TextWrapping = TextWrapping.Wrap
+                    },
+                    BuildToolbarGroups(),
+                    BuildStatusStrip()
+                }
+            }
         };
 
-        toolbar.Children.Add(MakeButton("Open image", OnOpenImageAsync));
-        toolbar.Children.Add(MakeButton("Open FRM", OnOpenFrmAsync));
-        toolbar.Children.Add(MakeButton("Open AAF", OnOpenAafAsync));
-        toolbar.Children.Add(MakeButton("Open ACT", OnOpenActAsync));
-        toolbar.Children.Add(MakeButton("Add text", _ => AddTextItem()));
-        toolbar.Children.Add(MakeButton("Add erase", _ => AddEraseArea()));
-        toolbar.Children.Add(MakeButton("Remove", _ => RemoveSelected()));
-        toolbar.Children.Add(MakeButton("Open project", OnOpenProjectAsync));
-        toolbar.Children.Add(MakeButton("Save project", OnSaveProjectAsync));
-        toolbar.Children.Add(MakeButton("Check project", _ => CheckProject()));
-        toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
-        toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
-        toolbar.Children.Add(MakeButton("Export FRM", OnExportFrmAsync));
-        toolbar.Children.Add(MakeButton("Export PNG preview", OnExportPngAsync));
-
-        Grid.SetColumnSpan(toolbar, 2);
-        root.Children.Add(toolbar);
+        Grid.SetColumnSpan(header, 2);
+        root.Children.Add(header);
 
         var scroll = new ScrollViewer
         {
             Background = Brushes.Black,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = _canvas
+            Content = new AvaloniaBorder
+            {
+                Background = new SolidColorBrush(Color.Parse("#11100E")),
+                BorderBrush = AccentDimBrush,
+                BorderThickness = new Thickness(2),
+                Padding = new Thickness(10),
+                Child = _canvas
+            }
         };
 
         Grid.SetRow(scroll, 1);
@@ -150,23 +185,29 @@ public sealed class MainWindow : Window
         Grid.SetColumn(panel, 1);
         root.Children.Add(panel);
 
+        var footer = new AvaloniaBorder
+        {
+            Background = PanelBackgroundBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10, 6),
+            Child = _status
+        };
+        Grid.SetRow(footer, 2);
+        Grid.SetColumnSpan(footer, 2);
+        root.Children.Add(footer);
+
         return root;
     }
 
     private Control BuildSidePanel()
     {
-        var panel = new StackPanel
+        var content = new StackPanel
         {
-            Spacing = 8,
-            Margin = new Thickness(10, 0, 0, 0)
+            Spacing = 10,
+            Margin = new Thickness(12, 0, 0, 0)
         };
-
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Text objects",
-            FontWeight = FontWeight.Bold,
-            FontSize = 16
-        });
 
         _itemsList.Height = 160;
         _itemsList.SelectionChanged += (_, _) =>
@@ -176,29 +217,6 @@ public sealed class MainWindow : Window
                 SelectItem(item);
             }
         };
-        panel.Children.Add(_itemsList);
-
-        panel.Children.Add(new Separator());
-        panel.Children.Add(Labeled("Name", _nameBox));
-        panel.Children.Add(Labeled("Text", _textBox));
-        panel.Children.Add(Labeled("X", _xBox));
-        panel.Children.Add(Labeled("Y", _yBox));
-        panel.Children.Add(Labeled("Width (0 = natural)", _widthBox));
-        panel.Children.Add(Labeled("Scale (integer)", _scaleBox));
-        panel.Children.Add(Labeled("Width scale", _widthScaleBox));
-        panel.Children.Add(Labeled("Height scale", _heightScaleBox));
-        panel.Children.Add(Labeled("Letter spacing", _letterSpacingBox));
-        panel.Children.Add(Labeled("Align", _alignBox));
-        panel.Children.Add(_uppercaseBox);
-        panel.Children.Add(MakeButton("Apply text changes", _ => ApplyEditorFieldsToSelected()));
-
-        panel.Children.Add(new Separator());
-        panel.Children.Add(new TextBlock
-        {
-            Text = "Erase / clone patches",
-            FontWeight = FontWeight.Bold,
-            FontSize = 16
-        });
 
         _eraseList.Height = 120;
         _eraseList.SelectionChanged += (_, _) =>
@@ -208,41 +226,210 @@ public sealed class MainWindow : Window
                 SelectEraseArea(area);
             }
         };
-        panel.Children.Add(_eraseList);
-        panel.Children.Add(Labeled("Erase name", _eraseNameBox));
-        panel.Children.Add(Labeled("Target X", _eraseXBox));
-        panel.Children.Add(Labeled("Target Y", _eraseYBox));
-        panel.Children.Add(Labeled("Target width", _eraseWidthBox));
-        panel.Children.Add(Labeled("Target height", _eraseHeightBox));
-        panel.Children.Add(Labeled("Source X", _eraseSourceXBox));
-        panel.Children.Add(Labeled("Source Y", _eraseSourceYBox));
-        panel.Children.Add(MakeButton("Add erase patch", _ => AddEraseArea()));
-        panel.Children.Add(MakeButton("Apply erase changes", _ => ApplyEraseFieldsToSelected()));
 
-        panel.Children.Add(new Separator());
-        panel.Children.Add(new TextBlock
+        content.Children.Add(BuildSection("Project status", new StackPanel
         {
-            Text = "Tip: erase patches clone a clean area of the base image over old text before the translated text is rendered. Drag a patch to move it, drag its handle to resize it, and adjust Source X/Y to choose where the clean texture comes from.",
-            TextWrapping = TextWrapping.Wrap
-        });
-        panel.Children.Add(_status);
+            Spacing = 6,
+            Children =
+            {
+                MakeIndicatorLine("FRM / base", _frmIndicator),
+                MakeIndicatorLine("AAF font", _aafIndicator),
+                MakeIndicatorLine("ACT palette", _actIndicator),
+                new TextBlock { Text = "Use Check project before exporting. The editor will refuse unsafe overwrite paths.", Foreground = MutedBrush, TextWrapping = TextWrapping.Wrap }
+            }
+        }));
+
+        content.Children.Add(BuildSection("Text objects", new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                _itemsList,
+                Labeled("Name", _nameBox),
+                Labeled("Text", _textBox),
+                Labeled("X", _xBox),
+                Labeled("Y", _yBox),
+                Labeled("Width (0 = natural)", _widthBox),
+                Labeled("Scale (integer)", _scaleBox),
+                Labeled("Width scale", _widthScaleBox),
+                Labeled("Height scale", _heightScaleBox),
+                Labeled("Letter spacing", _letterSpacingBox),
+                Labeled("Align", _alignBox),
+                _uppercaseBox,
+                MakeButton("Apply text changes", _ => ApplyEditorFieldsToSelected())
+            }
+        }));
+
+        content.Children.Add(BuildSection("Erase / clone patches", new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                _eraseList,
+                Labeled("Erase name", _eraseNameBox),
+                Labeled("Target X", _eraseXBox),
+                Labeled("Target Y", _eraseYBox),
+                Labeled("Target width", _eraseWidthBox),
+                Labeled("Target height", _eraseHeightBox),
+                Labeled("Source X", _eraseSourceXBox),
+                Labeled("Source Y", _eraseSourceYBox),
+                MakeButton("Add erase patch", _ => AddEraseArea()),
+                MakeButton("Apply erase changes", _ => ApplyEraseFieldsToSelected())
+            }
+        }));
+
+        content.Children.Add(BuildSection("Operator notes", new TextBlock
+        {
+            Text = "Erase patches clone a clean area of the base image over old text before the translated text is rendered. Drag a patch to move it, drag its handle to resize it, and adjust Source X/Y to choose where the clean texture comes from.",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = MutedBrush
+        }));
 
         return new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = panel
+            Content = content
         };
     }
 
-    private static Control Labeled(string label, Control control)
+    private Control BuildToolbarGroups()
+    {
+        var groups = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            ItemHeight = double.NaN,
+            ItemWidth = double.NaN
+        };
+
+        groups.Children.Add(BuildToolbarGroup("File",
+            MakeButton("Open image", OnOpenImageAsync),
+            MakeButton("Open FRM", OnOpenFrmAsync),
+            MakeButton("Open project", OnOpenProjectAsync),
+            MakeButton("Save project", OnSaveProjectAsync),
+            MakeButton("Save layout", OnSaveLayoutAsync)));
+
+        groups.Children.Add(BuildToolbarGroup("Assets",
+            MakeButton("Open AAF", OnOpenAafAsync),
+            MakeButton("Open ACT", OnOpenActAsync)));
+
+        groups.Children.Add(BuildToolbarGroup("Edit",
+            MakeButton("Add text", _ => AddTextItem()),
+            MakeButton("Add erase", _ => AddEraseArea()),
+            MakeButton("Remove", _ => RemoveSelected()),
+            MakeButton("Check project", _ => CheckProject())));
+
+        groups.Children.Add(BuildToolbarGroup("Export",
+            MakeButton("Export BMP 8-bit", OnExportBmp8Async),
+            MakeButton("Export FRM", OnExportFrmAsync),
+            MakeButton("Export PNG preview", OnExportPngAsync)));
+
+        return groups;
+    }
+
+    private Control BuildToolbarGroup(string title, params Control[] controls)
+    {
+        var buttonPanel = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+
+        foreach (Control control in controls)
+        {
+            buttonPanel.Children.Add(control);
+        }
+
+        return new AvaloniaBorder
+        {
+            Background = PanelInnerBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Margin = new Thickness(0, 0, 10, 0),
+            Padding = new Thickness(8),
+            Child = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = title, Foreground = TextBrush, FontWeight = FontWeight.Bold },
+                    buttonPanel
+                }
+            }
+        };
+    }
+
+    private Control BuildStatusStrip()
+    {
+        return new AvaloniaBorder
+        {
+            Background = PanelInnerBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8, 6),
+            Child = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    _assetSummary,
+                    new TextBlock
+                    {
+                        Text = "Theme inspired by Fallout 1/2 terminals and industrial UI panels.",
+                        Foreground = MutedBrush,
+                        FontSize = 12
+                    }
+                }
+            }
+        };
+    }
+
+    private Control BuildSection(string title, Control content)
+    {
+        return new AvaloniaBorder
+        {
+            Background = PanelBackgroundBrush,
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = title, FontWeight = FontWeight.Bold, FontSize = 15, Foreground = TextBrush },
+                    content
+                }
+            }
+        };
+    }
+
+    private Control MakeIndicatorLine(string label, TextBlock valueText)
+    {
+        valueText.Foreground = WarningBrush;
+        valueText.FontWeight = FontWeight.SemiBold;
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*")
+        };
+        grid.Children.Add(new TextBlock { Text = label + ": ", Foreground = TextBrush });
+        Grid.SetColumn(valueText, 1);
+        grid.Children.Add(valueText);
+        return grid;
+    }
+
+    private Control Labeled(string label, Control control)
     {
         return new StackPanel
         {
-            Spacing = 2,
+            Spacing = 3,
             Children =
             {
-                new TextBlock { Text = label },
+                new TextBlock { Text = label, Foreground = TextBrush },
                 control
             }
         };
@@ -253,10 +440,54 @@ public sealed class MainWindow : Window
         var button = new Button
         {
             Content = text,
-            Padding = new Thickness(10, 4)
+            Padding = new Thickness(10, 5),
+            Margin = new Thickness(0, 0, 6, 6),
+            Background = new SolidColorBrush(Color.Parse("#4A3420")),
+            Foreground = new SolidColorBrush(Color.Parse("#F2DCB0")),
+            BorderBrush = new SolidColorBrush(Color.Parse("#B7813E")),
+            BorderThickness = new Thickness(1)
         };
         button.Click += (_, e) => onClick(e);
         return button;
+    }
+
+    private void ApplyThemeToInputs()
+    {
+        foreach (Control control in new Control[]
+        {
+            _nameBox, _textBox, _xBox, _yBox, _widthBox, _scaleBox, _widthScaleBox, _heightScaleBox, _letterSpacingBox,
+            _eraseNameBox, _eraseXBox, _eraseYBox, _eraseWidthBox, _eraseHeightBox, _eraseSourceXBox, _eraseSourceYBox,
+            _itemsList, _eraseList, _alignBox, _uppercaseBox
+        })
+        {
+            if (control is TemplatedControl templated)
+            {
+                templated.Background = PanelInnerBrush;
+                templated.Foreground = TextBrush;
+                templated.BorderBrush = AccentDimBrush;
+            }
+        }
+
+        _status.Foreground = TextBrush;
+        _status.TextWrapping = TextWrapping.Wrap;
+        _assetSummary.Foreground = MutedBrush;
+        _assetSummary.TextWrapping = TextWrapping.Wrap;
+    }
+
+    private void RefreshAssetIndicators()
+    {
+        _frmIndicator.Text = _sourceFrmPath is not null ? Path.GetFileName(_sourceFrmPath) : _baseImagePath is not null ? Path.GetFileName(_baseImagePath) : "not loaded";
+        _frmIndicator.Foreground = (_sourceFrmPath is not null || _baseImagePath is not null) ? OkBrush : WarningBrush;
+
+        _aafIndicator.Text = _fontPath is not null ? Path.GetFileName(_fontPath) : "not loaded";
+        _aafIndicator.Foreground = _fontPath is not null ? OkBrush : WarningBrush;
+
+        _actIndicator.Text = _exportPalettePath is not null ? Path.GetFileName(_exportPalettePath) : "not loaded";
+        _actIndicator.Foreground = _exportPalettePath is not null ? OkBrush : WarningBrush;
+
+        int warningCount = GetProjectWarnings().Count;
+        _assetSummary.Text = warningCount == 0 ? "Project status: ready for export." : $"Project status: {warningCount} warning(s). Use Check project for details.";
+        _assetSummary.Foreground = warningCount == 0 ? OkBrush : WarningBrush;
     }
 
     private async void OnOpenImageAsync(RoutedEventArgs _)
@@ -1896,6 +2127,7 @@ public sealed class MainWindow : Window
     private void SetStatus(string message)
     {
         _status.Text = message;
+        RefreshAssetIndicators();
     }
 
     private sealed class UiProjectDocument
