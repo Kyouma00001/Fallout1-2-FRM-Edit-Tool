@@ -16,6 +16,7 @@ using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using System.Globalization;
+using System.Text.Json;
 
 namespace Fallout.Tools.UI;
 
@@ -71,6 +72,12 @@ public sealed class MainWindow : Window
 
     private const double ResizeHandleSize = 8;
 
+    private static readonly JsonSerializerOptions ProjectJsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true
+    };
+
     public MainWindow()
     {
         Title = "Fallout UI Text Layout Editor";
@@ -112,6 +119,8 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(MakeButton("Add text", _ => AddTextItem()));
         toolbar.Children.Add(MakeButton("Add erase", _ => AddEraseArea()));
         toolbar.Children.Add(MakeButton("Remove", _ => RemoveSelected()));
+        toolbar.Children.Add(MakeButton("Open project", OnOpenProjectAsync));
+        toolbar.Children.Add(MakeButton("Save project", OnSaveProjectAsync));
         toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
         toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
         toolbar.Children.Add(MakeButton("Export PNG preview", OnExportPngAsync));
@@ -250,21 +259,8 @@ public sealed class MainWindow : Window
         string? path = await PickOpenFileAsync("Open clean UI image", new[] { "*.png", "*.bmp" });
         if (path is null) return;
 
-        _baseImagePath = path;
-        await using FileStream stream = File.OpenRead(path);
-        _baseBitmap = new Bitmap(stream);
-        _baseImage.Source = _baseBitmap;
-        _canvas.Width = _baseBitmap.PixelSize.Width;
-        _canvas.Height = _baseBitmap.PixelSize.Height;
-        Canvas.SetLeft(_baseImage, 0);
-        Canvas.SetTop(_baseImage, 0);
-
-        foreach (EraseArea area in _eraseAreas)
-        {
-            UpdateEraseVisual(area);
-        }
-
-        SetStatus($"Opened image: {Path.GetFileName(path)} ({_baseBitmap.PixelSize.Width}x{_baseBitmap.PixelSize.Height})");
+        LoadBaseImage(path);
+        SetStatus($"Opened image: {Path.GetFileName(path)} ({_baseBitmap?.PixelSize.Width}x{_baseBitmap?.PixelSize.Height})");
     }
 
     private async void OnOpenAafAsync(RoutedEventArgs _)
@@ -272,15 +268,8 @@ public sealed class MainWindow : Window
         string? path = await PickOpenFileAsync("Open AAF font", new[] { "*.aaf" });
         if (path is null) return;
 
-        _fontPath = path;
-        _font = new AafReader().Read(path);
-        _palette = AafRenderPalette.Create(AafPaletteKind.Orange, path);
+        LoadAafFont(path);
         SetStatus($"Opened font: {Path.GetFileName(path)}");
-
-        foreach (UiTextItem item in _items)
-        {
-            UpdateTextBitmap(item);
-        }
     }
 
     private async void OnOpenActAsync(RoutedEventArgs _)
@@ -290,8 +279,7 @@ public sealed class MainWindow : Window
 
         try
         {
-            _exportPalette = LoadActPalette(path);
-            _exportPalettePath = path;
+            LoadActPaletteFile(path);
             SetStatus($"Opened ACT palette: {Path.GetFileName(path)}");
         }
         catch (Exception ex)
@@ -308,6 +296,48 @@ public sealed class MainWindow : Window
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
         File.WriteAllLines(path, _eraseAreas.Select(SerializeEraseLayoutLine).Concat(_items.Select(SerializeLayoutLine)));
         SetStatus($"Saved layout: {path}");
+    }
+
+    private async void OnSaveProjectAsync(RoutedEventArgs _)
+    {
+        string? path = await PickSaveFileAsync("Save Fallout UI project", "ui-project.fui.json", new[] { "*.fui.json", "*.json" });
+        if (path is null) return;
+
+        try
+        {
+            UiProjectDocument project = CreateProjectDocument(path);
+            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
+            string json = JsonSerializer.Serialize(project, ProjectJsonOptions);
+            await File.WriteAllTextAsync(path, json);
+            SetStatus($"Saved project: {path}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not save project: {ex.Message}");
+        }
+    }
+
+    private async void OnOpenProjectAsync(RoutedEventArgs _)
+    {
+        string? path = await PickOpenFileAsync("Open Fallout UI project", new[] { "*.fui.json", "*.json" });
+        if (path is null) return;
+
+        try
+        {
+            string json = await File.ReadAllTextAsync(path);
+            UiProjectDocument? project = JsonSerializer.Deserialize<UiProjectDocument>(json, ProjectJsonOptions);
+            if (project is null)
+            {
+                SetStatus("Could not open project: file is empty or invalid.");
+                return;
+            }
+
+            LoadProjectDocument(project, path);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not open project: {ex.Message}");
+        }
     }
 
     private async void OnExportPngAsync(RoutedEventArgs _)
@@ -380,6 +410,232 @@ public sealed class MainWindow : Window
         }
 
         return output;
+    }
+
+    private UiProjectDocument CreateProjectDocument(string projectPath)
+    {
+        return new UiProjectDocument
+        {
+            Version = 1,
+            BaseImagePath = MakeProjectPath(_baseImagePath, projectPath),
+            AafFontPath = MakeProjectPath(_fontPath, projectPath),
+            ActPalettePath = MakeProjectPath(_exportPalettePath, projectPath),
+            Texts = _items.Select(item => new UiTextData
+            {
+                Name = item.Name,
+                Text = item.Text,
+                X = item.X,
+                Y = item.Y,
+                Width = item.Width,
+                Align = item.Align,
+                Scale = item.Scale,
+                WidthScale = item.WidthScale,
+                HeightScale = item.HeightScale,
+                LetterSpacing = item.LetterSpacing,
+                ForceUppercase = item.ForceUppercase
+            }).ToList(),
+            EraseAreas = _eraseAreas.Select(area => new EraseAreaData
+            {
+                Name = area.Name,
+                X = area.X,
+                Y = area.Y,
+                Width = area.Width,
+                Height = area.Height,
+                SourceX = area.SourceX,
+                SourceY = area.SourceY
+            }).ToList()
+        };
+    }
+
+    private void LoadProjectDocument(UiProjectDocument project, string projectPath)
+    {
+        ClearEditableObjects();
+
+        var messages = new List<string>();
+
+        string? baseImagePath = ResolveProjectPath(project.BaseImagePath, projectPath);
+        if (!string.IsNullOrWhiteSpace(baseImagePath))
+        {
+            if (File.Exists(baseImagePath))
+            {
+                LoadBaseImage(baseImagePath);
+                messages.Add($"image {Path.GetFileName(baseImagePath)}");
+            }
+            else
+            {
+                messages.Add($"missing image {project.BaseImagePath}");
+            }
+        }
+
+        string? fontPath = ResolveProjectPath(project.AafFontPath, projectPath);
+        if (!string.IsNullOrWhiteSpace(fontPath))
+        {
+            if (File.Exists(fontPath))
+            {
+                LoadAafFont(fontPath);
+                messages.Add($"font {Path.GetFileName(fontPath)}");
+            }
+            else
+            {
+                messages.Add($"missing font {project.AafFontPath}");
+            }
+        }
+
+        string? actPath = ResolveProjectPath(project.ActPalettePath, projectPath);
+        if (!string.IsNullOrWhiteSpace(actPath))
+        {
+            if (File.Exists(actPath))
+            {
+                LoadActPaletteFile(actPath);
+                messages.Add($"ACT {Path.GetFileName(actPath)}");
+            }
+            else
+            {
+                messages.Add($"missing ACT {project.ActPalettePath}");
+            }
+        }
+
+        foreach (EraseAreaData area in project.EraseAreas)
+        {
+            _eraseNameBox.Text = string.IsNullOrWhiteSpace(area.Name) ? $"ERASE{_eraseAreas.Count + 1:00}" : area.Name;
+            _eraseXBox.Text = area.X.ToString(CultureInfo.InvariantCulture);
+            _eraseYBox.Text = area.Y.ToString(CultureInfo.InvariantCulture);
+            _eraseWidthBox.Text = Math.Max(1, area.Width).ToString(CultureInfo.InvariantCulture);
+            _eraseHeightBox.Text = Math.Max(1, area.Height).ToString(CultureInfo.InvariantCulture);
+            _eraseSourceXBox.Text = area.SourceX.ToString(CultureInfo.InvariantCulture);
+            _eraseSourceYBox.Text = area.SourceY.ToString(CultureInfo.InvariantCulture);
+            AddEraseArea();
+        }
+
+        foreach (UiTextData text in project.Texts)
+        {
+            _nameBox.Text = string.IsNullOrWhiteSpace(text.Name) ? $"TEXT{_items.Count + 1:00}" : text.Name;
+            _textBox.Text = text.Text ?? string.Empty;
+            _xBox.Text = text.X.ToString(CultureInfo.InvariantCulture);
+            _yBox.Text = text.Y.ToString(CultureInfo.InvariantCulture);
+            _widthBox.Text = text.Width.ToString(CultureInfo.InvariantCulture);
+            _scaleBox.Text = Math.Max(1, text.Scale).ToString(CultureInfo.InvariantCulture);
+            _widthScaleBox.Text = Math.Max(0.1, text.WidthScale <= 0 ? 1.0 : text.WidthScale).ToString("0.###", CultureInfo.InvariantCulture);
+            _heightScaleBox.Text = Math.Max(0.1, text.HeightScale <= 0 ? 1.0 : text.HeightScale).ToString("0.###", CultureInfo.InvariantCulture);
+            _letterSpacingBox.Text = text.LetterSpacing.ToString(CultureInfo.InvariantCulture);
+            _alignBox.SelectedItem = string.IsNullOrWhiteSpace(text.Align) ? "left" : text.Align;
+            _uppercaseBox.IsChecked = text.ForceUppercase;
+            AddTextItem();
+        }
+
+        _itemsList.ItemsSource = null;
+        _itemsList.ItemsSource = _items;
+        _eraseList.ItemsSource = null;
+        _eraseList.ItemsSource = _eraseAreas;
+
+        if (_items.Count > 0)
+        {
+            _itemsList.SelectedItem = _items[0];
+        }
+        else if (_eraseAreas.Count > 0)
+        {
+            _eraseList.SelectedItem = _eraseAreas[0];
+        }
+
+        string suffix = messages.Count > 0 ? $" ({string.Join(", ", messages)})" : string.Empty;
+        SetStatus($"Loaded project: {Path.GetFileName(projectPath)}{suffix}");
+    }
+
+    private void ClearEditableObjects()
+    {
+        foreach (UiTextItem item in _items)
+        {
+            _canvas.Children.Remove(item.ImageControl);
+            _canvas.Children.Remove(item.SelectionBorder);
+            _canvas.Children.Remove(item.WidthHandle);
+            _canvas.Children.Remove(item.ScaleHandle);
+        }
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            _canvas.Children.Remove(area.ImageControl);
+            _canvas.Children.Remove(area.TargetBorder);
+            _canvas.Children.Remove(area.SourceBorder);
+            _canvas.Children.Remove(area.ResizeHandle);
+        }
+
+        _items.Clear();
+        _eraseAreas.Clear();
+        _selectedItem = null;
+        _selectedErase = null;
+        _itemsList.SelectedItem = null;
+        _eraseList.SelectedItem = null;
+        _itemsList.ItemsSource = null;
+        _eraseList.ItemsSource = null;
+    }
+
+    private void LoadBaseImage(string path)
+    {
+        _baseImagePath = path;
+        using FileStream stream = File.OpenRead(path);
+        _baseBitmap = new Bitmap(stream);
+        _baseImage.Source = _baseBitmap;
+        _canvas.Width = _baseBitmap.PixelSize.Width;
+        _canvas.Height = _baseBitmap.PixelSize.Height;
+        Canvas.SetLeft(_baseImage, 0);
+        Canvas.SetTop(_baseImage, 0);
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            UpdateEraseVisual(area);
+        }
+    }
+
+    private void LoadAafFont(string path)
+    {
+        _fontPath = path;
+        _font = new AafReader().Read(path);
+        _palette = AafRenderPalette.Create(AafPaletteKind.Orange, path);
+
+        foreach (UiTextItem item in _items)
+        {
+            UpdateTextBitmap(item);
+        }
+    }
+
+    private void LoadActPaletteFile(string path)
+    {
+        _exportPalette = LoadActPalette(path);
+        _exportPalettePath = path;
+    }
+
+    private static string? MakeProjectPath(string? path, string projectPath)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+
+        try
+        {
+            string? directory = Path.GetDirectoryName(projectPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                return Path.GetRelativePath(directory, path);
+            }
+        }
+        catch
+        {
+            // Fall back to the original path if it cannot be converted.
+        }
+
+        return path;
+    }
+
+    private static string? ResolveProjectPath(string? path, string projectPath)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        if (Path.IsPathRooted(path)) return path;
+
+        string? directory = Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Directory.GetCurrentDirectory();
+        }
+
+        return Path.GetFullPath(Path.Combine(directory, path));
     }
 
     private async Task<string?> PickOpenFileAsync(string title, IReadOnlyList<string> patterns)
@@ -1302,6 +1558,42 @@ public sealed class MainWindow : Window
     private void SetStatus(string message)
     {
         _status.Text = message;
+    }
+
+    private sealed class UiProjectDocument
+    {
+        public int Version { get; set; } = 1;
+        public string? BaseImagePath { get; set; }
+        public string? AafFontPath { get; set; }
+        public string? ActPalettePath { get; set; }
+        public List<UiTextData> Texts { get; set; } = new();
+        public List<EraseAreaData> EraseAreas { get; set; } = new();
+    }
+
+    private sealed class UiTextData
+    {
+        public string Name { get; set; } = "TEXT";
+        public string Text { get; set; } = string.Empty;
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public string Align { get; set; } = "left";
+        public int Scale { get; set; } = 1;
+        public double WidthScale { get; set; } = 1.0;
+        public double HeightScale { get; set; } = 1.0;
+        public int LetterSpacing { get; set; }
+        public bool ForceUppercase { get; set; }
+    }
+
+    private sealed class EraseAreaData
+    {
+        public string Name { get; set; } = "ERASE";
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; } = 40;
+        public int Height { get; set; } = 16;
+        public int SourceX { get; set; }
+        public int SourceY { get; set; }
     }
 
     private enum DragMode
