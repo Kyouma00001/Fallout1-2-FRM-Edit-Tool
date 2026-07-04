@@ -124,6 +124,7 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(MakeButton("Remove", _ => RemoveSelected()));
         toolbar.Children.Add(MakeButton("Open project", OnOpenProjectAsync));
         toolbar.Children.Add(MakeButton("Save project", OnSaveProjectAsync));
+        toolbar.Children.Add(MakeButton("Check project", _ => CheckProject()));
         toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
         toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
         toolbar.Children.Add(MakeButton("Export FRM", OnExportFrmAsync));
@@ -375,6 +376,12 @@ public sealed class MainWindow : Window
         string? path = await PickSaveFileAsync("Export composed PNG preview", "ui-composed.png", new[] { "*.png" });
         if (path is null) return;
 
+        if (IsSamePath(path, _baseImagePath))
+        {
+            SetStatus("Choose a different PNG output path. The editor will not overwrite the opened base image.");
+            return;
+        }
+
         using SixLabors.ImageSharp.Image<Rgba32> output = ComposeOutputImage();
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
         await using FileStream stream = File.Create(path);
@@ -394,6 +401,12 @@ public sealed class MainWindow : Window
 
         string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" });
         if (path is null) return;
+
+        if (IsSamePath(path, _baseImagePath))
+        {
+            SetStatus("Choose a different BMP output path. The editor will not overwrite the opened base image.");
+            return;
+        }
 
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
 
@@ -431,6 +444,12 @@ public sealed class MainWindow : Window
         string? path = await PickSaveFileAsync("Export edited FRM", suggestedName, new[] { "*.frm" });
         if (path is null) return;
 
+        if (IsSamePath(path, _sourceFrmPath))
+        {
+            SetStatus("Choose a different FRM output path. The editor will not overwrite the source FRM directly.");
+            return;
+        }
+
         try
         {
             FrmFile original = new FrmReader().Read(_sourceFrmPath);
@@ -449,17 +468,91 @@ public sealed class MainWindow : Window
     {
         if (_baseImagePath is null)
         {
-            SetStatus("Open a base image first.");
+            SetStatus("Open a base image or FRM first.");
             return false;
         }
 
-        if (_font is null)
+        if (_items.Count > 0 && _font is null)
         {
-            SetStatus("Open an AAF font first.");
+            SetStatus("Open an AAF font before exporting text objects.");
             return false;
         }
 
         return true;
+    }
+
+    private void CheckProject()
+    {
+        var messages = new List<string>();
+
+        messages.Add(_sourceFrmPath is not null ? $"FRM: {Path.GetFileName(_sourceFrmPath)}" : _baseImagePath is not null ? $"Image: {Path.GetFileName(_baseImagePath)}" : "No base image/FRM");
+        messages.Add(_exportPalettePath is not null ? $"ACT: {Path.GetFileName(_exportPalettePath)}" : "No ACT palette");
+        messages.Add(_fontPath is not null ? $"AAF: {Path.GetFileName(_fontPath)}" : _items.Count > 0 ? "No AAF font for text" : "No AAF font needed");
+        messages.Add($"Texts: {_items.Count}");
+        messages.Add($"Erase patches: {_eraseAreas.Count}");
+
+        List<string> warnings = GetProjectWarnings();
+        if (warnings.Count > 0)
+        {
+            messages.Add("Warnings: " + string.Join("; ", warnings));
+        }
+        else
+        {
+            messages.Add("Ready for export.");
+        }
+
+        SetStatus(string.Join(" | ", messages));
+    }
+
+    private List<string> GetProjectWarnings()
+    {
+        var warnings = new List<string>();
+
+        if (_baseBitmap is null)
+        {
+            warnings.Add("open a base image or FRM");
+            return warnings;
+        }
+
+        int imageWidth = _baseBitmap.PixelSize.Width;
+        int imageHeight = _baseBitmap.PixelSize.Height;
+
+        if (_items.Count > 0 && _font is null)
+        {
+            warnings.Add("text objects need an AAF font");
+        }
+
+        if (_sourceFrmPath is not null && _exportPalette is null)
+        {
+            warnings.Add("FRM export needs an ACT palette");
+        }
+
+        foreach (UiTextItem item in _items)
+        {
+            int renderedWidth = Math.Max(1, item.RenderedWidth);
+            int renderedHeight = Math.Max(1, item.RenderedHeight);
+            int drawX = GetAlignedX(item, renderedWidth);
+
+            if (drawX < 0 || item.Y < 0 || drawX + renderedWidth > imageWidth || item.Y + renderedHeight > imageHeight)
+            {
+                warnings.Add($"text '{item.Name}' is partly outside the image");
+            }
+        }
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            if (area.X < 0 || area.Y < 0 || area.X + area.Width > imageWidth || area.Y + area.Height > imageHeight)
+            {
+                warnings.Add($"erase patch '{area.Name}' target is partly outside the image");
+            }
+
+            if (area.SourceX < 0 || area.SourceY < 0 || area.SourceX + area.Width > imageWidth || area.SourceY + area.Height > imageHeight)
+            {
+                warnings.Add($"erase patch '{area.Name}' source is partly outside the image");
+            }
+        }
+
+        return warnings;
     }
 
     private SixLabors.ImageSharp.Image<Rgba32> ComposeOutputImage()
@@ -1777,6 +1870,22 @@ public sealed class MainWindow : Window
             item.LetterSpacing.ToString(CultureInfo.InvariantCulture),
             item.ForceUppercase ? "uppercase" : "normal",
             item.Text);
+    }
+
+    private static bool IsSamePath(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+
+        try
+        {
+            string fullLeft = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string fullRight = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(fullLeft, fullRight, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static void SetZIndex(Control control, int zIndex)
