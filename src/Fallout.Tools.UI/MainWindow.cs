@@ -24,6 +24,7 @@ public sealed class MainWindow : Window
     private readonly Canvas _canvas = new();
     private readonly AvaloniaImage _baseImage = new();
     private readonly ListBox _itemsList = new();
+    private readonly ListBox _eraseList = new();
     private readonly TextBox _nameBox = new() { Text = "TEXT01" };
     private readonly TextBox _textBox = new() { Text = "negociar" };
     private readonly TextBox _xBox = new() { Text = "10" };
@@ -35,9 +36,19 @@ public sealed class MainWindow : Window
     private readonly TextBox _letterSpacingBox = new() { Text = "0" };
     private readonly ComboBox _alignBox = new();
     private readonly CheckBox _uppercaseBox = new() { Content = "Uppercase", IsChecked = true };
+
+    private readonly TextBox _eraseNameBox = new() { Text = "ERASE01" };
+    private readonly TextBox _eraseXBox = new() { Text = "10" };
+    private readonly TextBox _eraseYBox = new() { Text = "10" };
+    private readonly TextBox _eraseWidthBox = new() { Text = "40" };
+    private readonly TextBox _eraseHeightBox = new() { Text = "16" };
+    private readonly TextBox _eraseSourceXBox = new() { Text = "10" };
+    private readonly TextBox _eraseSourceYBox = new() { Text = "30" };
+
     private readonly TextBlock _status = new() { Text = "Open a base image and an AAF font to start." };
 
     private readonly List<UiTextItem> _items = new();
+    private readonly List<EraseArea> _eraseAreas = new();
     private string? _baseImagePath;
     private Bitmap? _baseBitmap;
     private AafFont? _font;
@@ -46,11 +57,13 @@ public sealed class MainWindow : Window
     private Rgba32[]? _exportPalette;
     private string? _exportPalettePath;
     private UiTextItem? _selectedItem;
+    private EraseArea? _selectedErase;
     private AvaloniaPoint _dragOffset;
     private DragMode _dragMode = DragMode.None;
     private UiTextItem? _dragItem;
     private AvaloniaPoint _dragStartCanvas;
     private int _dragStartWidth;
+    private int _dragStartHeight;
     private int _dragStartRenderedWidth;
     private int _dragStartRenderedHeight;
     private double _dragStartWidthScale;
@@ -73,6 +86,7 @@ public sealed class MainWindow : Window
 
         Content = BuildLayout();
         _baseImage.Stretch = Stretch.None;
+        SetZIndex(_baseImage, 0);
         _canvas.Children.Add(_baseImage);
     }
 
@@ -96,6 +110,7 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(MakeButton("Open AAF", OnOpenAafAsync));
         toolbar.Children.Add(MakeButton("Open ACT", OnOpenActAsync));
         toolbar.Children.Add(MakeButton("Add text", _ => AddTextItem()));
+        toolbar.Children.Add(MakeButton("Add erase", _ => AddEraseArea()));
         toolbar.Children.Add(MakeButton("Remove", _ => RemoveSelected()));
         toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
         toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
@@ -161,17 +176,49 @@ public sealed class MainWindow : Window
         panel.Children.Add(Labeled("Letter spacing", _letterSpacingBox));
         panel.Children.Add(Labeled("Align", _alignBox));
         panel.Children.Add(_uppercaseBox);
-        panel.Children.Add(MakeButton("Apply changes", _ => ApplyEditorFieldsToSelected()));
+        panel.Children.Add(MakeButton("Apply text changes", _ => ApplyEditorFieldsToSelected()));
 
         panel.Children.Add(new Separator());
         panel.Children.Add(new TextBlock
         {
-            Text = "Tip: drag text to move it. Drag the right handle to change the layout box width. Drag the bottom-right handle to resize the rendered text. Use Export BMP 8-bit with the ACT palette for final FRM conversion.",
+            Text = "Erase / clone patches",
+            FontWeight = FontWeight.Bold,
+            FontSize = 16
+        });
+
+        _eraseList.Height = 120;
+        _eraseList.SelectionChanged += (_, _) =>
+        {
+            if (_eraseList.SelectedItem is EraseArea area)
+            {
+                SelectEraseArea(area);
+            }
+        };
+        panel.Children.Add(_eraseList);
+        panel.Children.Add(Labeled("Erase name", _eraseNameBox));
+        panel.Children.Add(Labeled("Target X", _eraseXBox));
+        panel.Children.Add(Labeled("Target Y", _eraseYBox));
+        panel.Children.Add(Labeled("Target width", _eraseWidthBox));
+        panel.Children.Add(Labeled("Target height", _eraseHeightBox));
+        panel.Children.Add(Labeled("Source X", _eraseSourceXBox));
+        panel.Children.Add(Labeled("Source Y", _eraseSourceYBox));
+        panel.Children.Add(MakeButton("Add erase patch", _ => AddEraseArea()));
+        panel.Children.Add(MakeButton("Apply erase changes", _ => ApplyEraseFieldsToSelected()));
+
+        panel.Children.Add(new Separator());
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Tip: erase patches clone a clean area of the base image over old text before the translated text is rendered. Drag a patch to move it, drag its handle to resize it, and adjust Source X/Y to choose where the clean texture comes from.",
             TextWrapping = TextWrapping.Wrap
         });
         panel.Children.Add(_status);
 
-        return panel;
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = panel
+        };
     }
 
     private static Control Labeled(string label, Control control)
@@ -211,6 +258,11 @@ public sealed class MainWindow : Window
         _canvas.Height = _baseBitmap.PixelSize.Height;
         Canvas.SetLeft(_baseImage, 0);
         Canvas.SetTop(_baseImage, 0);
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            UpdateEraseVisual(area);
+        }
 
         SetStatus($"Opened image: {Path.GetFileName(path)} ({_baseBitmap.PixelSize.Width}x{_baseBitmap.PixelSize.Height})");
     }
@@ -254,7 +306,7 @@ public sealed class MainWindow : Window
         if (path is null) return;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
-        File.WriteAllLines(path, _items.Select(SerializeLayoutLine));
+        File.WriteAllLines(path, _eraseAreas.Select(SerializeEraseLayoutLine).Concat(_items.Select(SerializeLayoutLine)));
         SetStatus($"Saved layout: {path}");
     }
 
@@ -313,6 +365,12 @@ public sealed class MainWindow : Window
         if (_baseImagePath is null) throw new InvalidOperationException("Base image is not loaded.");
 
         SixLabors.ImageSharp.Image<Rgba32> output = SixLabors.ImageSharp.Image.Load<Rgba32>(_baseImagePath);
+
+        using SixLabors.ImageSharp.Image<Rgba32> cleanSource = output.Clone();
+        foreach (EraseArea area in _eraseAreas)
+        {
+            ApplyErasePatch(output, cleanSource, area);
+        }
 
         foreach (UiTextItem item in _items)
         {
@@ -387,6 +445,11 @@ public sealed class MainWindow : Window
         item.ScaleHandle.PointerMoved += (_, e) => ContinueResize(item, e);
         item.ScaleHandle.PointerReleased += (_, e) => EndDrag(e);
 
+        SetZIndex(item.ImageControl, 10);
+        SetZIndex(item.SelectionBorder, 30);
+        SetZIndex(item.WidthHandle, 40);
+        SetZIndex(item.ScaleHandle, 40);
+
         _items.Add(item);
         _canvas.Children.Add(item.ImageControl);
         _canvas.Children.Add(item.SelectionBorder);
@@ -400,6 +463,20 @@ public sealed class MainWindow : Window
     }
 
     private void RemoveSelected()
+    {
+        if (_selectedItem is not null)
+        {
+            RemoveSelectedText();
+            return;
+        }
+
+        if (_selectedErase is not null)
+        {
+            RemoveSelectedErase();
+        }
+    }
+
+    private void RemoveSelectedText()
     {
         if (_selectedItem is null) return;
 
@@ -415,13 +492,35 @@ public sealed class MainWindow : Window
         SetStatus("Removed selected text item.");
     }
 
+    private void RemoveSelectedErase()
+    {
+        if (_selectedErase is null) return;
+
+        _canvas.Children.Remove(_selectedErase.ImageControl);
+        _canvas.Children.Remove(_selectedErase.TargetBorder);
+        _canvas.Children.Remove(_selectedErase.SourceBorder);
+        _canvas.Children.Remove(_selectedErase.ResizeHandle);
+        _eraseAreas.Remove(_selectedErase);
+        _selectedErase = null;
+        UpdateSelectionVisuals();
+        _eraseList.ItemsSource = null;
+        _eraseList.ItemsSource = _eraseAreas;
+        SetStatus("Removed selected erase patch.");
+    }
+
     private void SelectItem(UiTextItem item)
     {
+        _selectedErase = null;
+        if (_eraseList.SelectedItem is not null)
+        {
+            _eraseList.SelectedItem = null;
+        }
+
         _selectedItem = item;
         SyncEditorFields(item);
         UpdateSelectionVisuals();
         Focus();
-        SetStatus($"Selected: {item.Name}");
+        SetStatus($"Selected text: {item.Name}");
     }
 
     private void SyncEditorFields(UiTextItem item)
@@ -463,6 +562,148 @@ public sealed class MainWindow : Window
         _itemsList.ItemsSource = null;
         _itemsList.ItemsSource = _items;
         _itemsList.SelectedItem = _selectedItem;
+    }
+
+    private void AddEraseArea()
+    {
+        var area = new EraseArea
+        {
+            Name = string.IsNullOrWhiteSpace(_eraseNameBox.Text) ? $"ERASE{_eraseAreas.Count + 1:00}" : _eraseNameBox.Text.Trim(),
+            X = Math.Max(0, ParseInt(_eraseXBox.Text, 10)),
+            Y = Math.Max(0, ParseInt(_eraseYBox.Text, 10)),
+            Width = Math.Max(1, ParseInt(_eraseWidthBox.Text, 40)),
+            Height = Math.Max(1, ParseInt(_eraseHeightBox.Text, 16)),
+            SourceX = Math.Max(0, ParseInt(_eraseSourceXBox.Text, 10)),
+            SourceY = Math.Max(0, ParseInt(_eraseSourceYBox.Text, 30)),
+            ImageControl = new AvaloniaImage { Stretch = Stretch.None },
+            TargetBorder = CreateEraseTargetBorder(),
+            SourceBorder = CreateEraseSourceBorder(),
+            ResizeHandle = CreateResizeHandle()
+        };
+
+        area.ImageControl.PointerPressed += (_, e) => StartEraseMove(area, e);
+        area.ImageControl.PointerMoved += (_, e) => ContinueEraseMove(area, e);
+        area.ImageControl.PointerReleased += (_, e) => EndDrag(e);
+
+        area.ResizeHandle.PointerPressed += (_, e) => StartEraseResize(area, e);
+        area.ResizeHandle.PointerMoved += (_, e) => ContinueEraseResize(area, e);
+        area.ResizeHandle.PointerReleased += (_, e) => EndDrag(e);
+
+        area.SourceBorder.PointerPressed += (_, e) => StartEraseSourceMove(area, e);
+        area.SourceBorder.PointerMoved += (_, e) => ContinueEraseSourceMove(area, e);
+        area.SourceBorder.PointerReleased += (_, e) => EndDrag(e);
+
+        SetZIndex(area.ImageControl, 1);
+        SetZIndex(area.TargetBorder, 25);
+        SetZIndex(area.SourceBorder, 24);
+        SetZIndex(area.ResizeHandle, 40);
+
+        _eraseAreas.Add(area);
+        _canvas.Children.Add(area.ImageControl);
+        _canvas.Children.Add(area.TargetBorder);
+        _canvas.Children.Add(area.SourceBorder);
+        _canvas.Children.Add(area.ResizeHandle);
+        _eraseList.ItemsSource = null;
+        _eraseList.ItemsSource = _eraseAreas;
+        _eraseList.SelectedItem = area;
+        UpdateEraseVisual(area);
+        SelectEraseArea(area);
+    }
+
+    private void SelectEraseArea(EraseArea area)
+    {
+        _selectedItem = null;
+        if (_itemsList.SelectedItem is not null)
+        {
+            _itemsList.SelectedItem = null;
+        }
+
+        _selectedErase = area;
+        SyncEraseEditorFields(area);
+        UpdateSelectionVisuals();
+        Focus();
+        SetStatus($"Selected erase patch: {area.Name}");
+    }
+
+    private void SyncEraseEditorFields(EraseArea area)
+    {
+        _eraseNameBox.Text = area.Name;
+        _eraseXBox.Text = area.X.ToString(CultureInfo.InvariantCulture);
+        _eraseYBox.Text = area.Y.ToString(CultureInfo.InvariantCulture);
+        _eraseWidthBox.Text = area.Width.ToString(CultureInfo.InvariantCulture);
+        _eraseHeightBox.Text = area.Height.ToString(CultureInfo.InvariantCulture);
+        _eraseSourceXBox.Text = area.SourceX.ToString(CultureInfo.InvariantCulture);
+        _eraseSourceYBox.Text = area.SourceY.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void ApplyEraseFieldsToSelected()
+    {
+        if (_selectedErase is null)
+        {
+            AddEraseArea();
+            return;
+        }
+
+        _selectedErase.Name = string.IsNullOrWhiteSpace(_eraseNameBox.Text) ? _selectedErase.Name : _eraseNameBox.Text.Trim();
+        _selectedErase.X = Math.Max(0, ParseInt(_eraseXBox.Text, _selectedErase.X));
+        _selectedErase.Y = Math.Max(0, ParseInt(_eraseYBox.Text, _selectedErase.Y));
+        _selectedErase.Width = Math.Max(1, ParseInt(_eraseWidthBox.Text, _selectedErase.Width));
+        _selectedErase.Height = Math.Max(1, ParseInt(_eraseHeightBox.Text, _selectedErase.Height));
+        _selectedErase.SourceX = Math.Max(0, ParseInt(_eraseSourceXBox.Text, _selectedErase.SourceX));
+        _selectedErase.SourceY = Math.Max(0, ParseInt(_eraseSourceYBox.Text, _selectedErase.SourceY));
+
+        UpdateEraseVisual(_selectedErase);
+        _eraseList.ItemsSource = null;
+        _eraseList.ItemsSource = _eraseAreas;
+        _eraseList.SelectedItem = _selectedErase;
+    }
+
+    private void UpdateEraseVisual(EraseArea area)
+    {
+        UpdateErasePreview(area);
+
+        area.TargetBorder.Width = area.Width;
+        area.TargetBorder.Height = area.Height;
+        Canvas.SetLeft(area.ImageControl, area.X);
+        Canvas.SetTop(area.ImageControl, area.Y);
+        Canvas.SetLeft(area.TargetBorder, area.X);
+        Canvas.SetTop(area.TargetBorder, area.Y);
+        Canvas.SetLeft(area.ResizeHandle, area.X + area.Width - ResizeHandleSize / 2);
+        Canvas.SetTop(area.ResizeHandle, area.Y + area.Height - ResizeHandleSize / 2);
+
+        area.SourceBorder.Width = area.Width;
+        area.SourceBorder.Height = area.Height;
+        Canvas.SetLeft(area.SourceBorder, area.SourceX);
+        Canvas.SetTop(area.SourceBorder, area.SourceY);
+
+        UpdateSelectionVisuals();
+    }
+
+    private void UpdateErasePreview(EraseArea area)
+    {
+        if (_baseImagePath is null)
+        {
+            area.ImageControl.Source = null;
+            return;
+        }
+
+        using SixLabors.ImageSharp.Image<Rgba32> baseImage = SixLabors.ImageSharp.Image.Load<Rgba32>(_baseImagePath);
+        using var patch = new SixLabors.ImageSharp.Image<Rgba32>(area.Width, area.Height);
+
+        for (int y = 0; y < patch.Height; y++)
+        {
+            int sourceY = Clamp(area.SourceY + y, 0, baseImage.Height - 1);
+            for (int x = 0; x < patch.Width; x++)
+            {
+                int sourceX = Clamp(area.SourceX + x, 0, baseImage.Width - 1);
+                patch[x, y] = baseImage[sourceX, sourceY];
+            }
+        }
+
+        using var memory = new MemoryStream();
+        patch.Save(memory, new PngEncoder());
+        memory.Position = 0;
+        area.ImageControl.Source = new Bitmap(memory);
     }
 
     private void UpdateTextBitmap(UiTextItem item)
@@ -542,6 +783,96 @@ public sealed class MainWindow : Window
             "right" => item.X + Math.Max(0, item.Width - renderedWidth),
             _ => item.X
         };
+    }
+
+    private void StartEraseMove(EraseArea area, PointerPressedEventArgs e)
+    {
+        SelectEraseArea(area);
+        _dragMode = DragMode.MoveErase;
+        _dragStartCanvas = e.GetPosition(_canvas);
+        _dragOffset = e.GetPosition(area.ImageControl);
+        e.Pointer.Capture(area.ImageControl);
+        e.Handled = true;
+    }
+
+    private void ContinueEraseMove(EraseArea area, PointerEventArgs e)
+    {
+        if (_dragMode != DragMode.MoveErase || _selectedErase != area || e.Pointer.Captured != area.ImageControl)
+        {
+            return;
+        }
+
+        AvaloniaPoint canvasPosition = e.GetPosition(_canvas);
+        area.X = Math.Max(0, (int)Math.Round(canvasPosition.X - _dragOffset.X));
+        area.Y = Math.Max(0, (int)Math.Round(canvasPosition.Y - _dragOffset.Y));
+        SyncEraseEditorFields(area);
+        UpdateEraseVisual(area);
+        e.Handled = true;
+    }
+
+    private void StartEraseSourceMove(EraseArea area, PointerPressedEventArgs e)
+    {
+        SelectEraseArea(area);
+        _dragMode = DragMode.MoveEraseSource;
+        _dragOffset = e.GetPosition(area.SourceBorder);
+        e.Pointer.Capture(area.SourceBorder);
+        SetStatus($"Dragging erase source: {area.Name}");
+        e.Handled = true;
+    }
+
+    private void ContinueEraseSourceMove(EraseArea area, PointerEventArgs e)
+    {
+        if (_dragMode != DragMode.MoveEraseSource || _selectedErase != area || e.Pointer.Captured != area.SourceBorder)
+        {
+            return;
+        }
+
+        AvaloniaPoint canvasPosition = e.GetPosition(_canvas);
+        int newSourceX = (int)Math.Round(canvasPosition.X - _dragOffset.X);
+        int newSourceY = (int)Math.Round(canvasPosition.Y - _dragOffset.Y);
+
+        if (_baseBitmap is not null)
+        {
+            newSourceX = Clamp(newSourceX, 0, Math.Max(0, _baseBitmap.PixelSize.Width - area.Width));
+            newSourceY = Clamp(newSourceY, 0, Math.Max(0, _baseBitmap.PixelSize.Height - area.Height));
+        }
+        else
+        {
+            newSourceX = Math.Max(0, newSourceX);
+            newSourceY = Math.Max(0, newSourceY);
+        }
+
+        area.SourceX = newSourceX;
+        area.SourceY = newSourceY;
+        SyncEraseEditorFields(area);
+        UpdateEraseVisual(area);
+        e.Handled = true;
+    }
+
+    private void StartEraseResize(EraseArea area, PointerPressedEventArgs e)
+    {
+        SelectEraseArea(area);
+        _dragMode = DragMode.ResizeErase;
+        _dragStartCanvas = e.GetPosition(_canvas);
+        _dragStartWidth = area.Width;
+        _dragStartHeight = area.Height;
+        e.Pointer.Capture(area.ResizeHandle);
+        e.Handled = true;
+    }
+
+    private void ContinueEraseResize(EraseArea area, PointerEventArgs e)
+    {
+        if (_dragMode != DragMode.ResizeErase || _selectedErase != area || e.Pointer.Captured != area.ResizeHandle)
+        {
+            return;
+        }
+
+        AvaloniaPoint canvasPosition = e.GetPosition(_canvas);
+        area.Width = Math.Max(1, (int)Math.Round(_dragStartWidth + canvasPosition.X - _dragStartCanvas.X));
+        area.Height = Math.Max(1, (int)Math.Round(_dragStartHeight + canvasPosition.Y - _dragStartCanvas.Y));
+        SyncEraseEditorFields(area);
+        UpdateEraseVisual(area);
+        e.Handled = true;
     }
 
     private void StartDrag(UiTextItem item, PointerPressedEventArgs e)
@@ -647,6 +978,30 @@ public sealed class MainWindow : Window
         };
     }
 
+    private static AvaloniaBorder CreateEraseTargetBorder()
+    {
+        return new AvaloniaBorder
+        {
+            BorderBrush = Brushes.Orange,
+            BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(Color.FromArgb(48, 255, 128, 0)),
+            IsHitTestVisible = false,
+            IsVisible = false
+        };
+    }
+
+    private static AvaloniaBorder CreateEraseSourceBorder()
+    {
+        return new AvaloniaBorder
+        {
+            BorderBrush = Brushes.Lime,
+            BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(Color.FromArgb(28, 0, 255, 0)),
+            IsHitTestVisible = true,
+            IsVisible = false
+        };
+    }
+
     private static AvaloniaBorder CreateResizeHandle()
     {
         return new AvaloniaBorder
@@ -669,45 +1024,89 @@ public sealed class MainWindow : Window
             item.WidthHandle.IsVisible = isSelected;
             item.ScaleHandle.IsVisible = isSelected;
         }
+
+        foreach (EraseArea area in _eraseAreas)
+        {
+            bool isSelected = ReferenceEquals(area, _selectedErase);
+            area.TargetBorder.IsVisible = isSelected;
+            area.SourceBorder.IsVisible = isSelected;
+            area.ResizeHandle.IsVisible = isSelected;
+        }
     }
 
     private void OnEditorKeyDown(object? sender, KeyEventArgs e)
     {
-        if (_selectedItem is null)
+        if (_selectedItem is null && _selectedErase is null)
         {
             return;
         }
 
         int step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 10 : 1;
-        bool handled = true;
+        int dx = 0;
+        int dy = 0;
 
         switch (e.Key)
         {
             case Key.Left:
-                _selectedItem.X = Math.Max(0, _selectedItem.X - step);
+                dx = -step;
                 break;
             case Key.Right:
-                _selectedItem.X += step;
+                dx = step;
                 break;
             case Key.Up:
-                _selectedItem.Y = Math.Max(0, _selectedItem.Y - step);
+                dy = -step;
                 break;
             case Key.Down:
-                _selectedItem.Y += step;
+                dy = step;
                 break;
             default:
-                handled = false;
-                break;
+                return;
         }
 
-        if (!handled)
+        if (_selectedItem is not null)
         {
-            return;
+            _selectedItem.X = Math.Max(0, _selectedItem.X + dx);
+            _selectedItem.Y = Math.Max(0, _selectedItem.Y + dy);
+            SyncEditorFields(_selectedItem);
+            UpdateControlPosition(_selectedItem, _selectedItem.RenderedWidth);
+        }
+        else if (_selectedErase is not null)
+        {
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            {
+                _selectedErase.SourceX = Math.Max(0, _selectedErase.SourceX + dx);
+                _selectedErase.SourceY = Math.Max(0, _selectedErase.SourceY + dy);
+            }
+            else
+            {
+                _selectedErase.X = Math.Max(0, _selectedErase.X + dx);
+                _selectedErase.Y = Math.Max(0, _selectedErase.Y + dy);
+            }
+
+            SyncEraseEditorFields(_selectedErase);
+            UpdateEraseVisual(_selectedErase);
         }
 
-        SyncEditorFields(_selectedItem);
-        UpdateControlPosition(_selectedItem, _selectedItem.RenderedWidth);
         e.Handled = true;
+    }
+
+    private static void ApplyErasePatch(SixLabors.ImageSharp.Image<Rgba32> destination, SixLabors.ImageSharp.Image<Rgba32> source, EraseArea area)
+    {
+        for (int y = 0; y < area.Height; y++)
+        {
+            int targetY = area.Y + y;
+            if (targetY < 0 || targetY >= destination.Height) continue;
+
+            int sourceY = Clamp(area.SourceY + y, 0, source.Height - 1);
+            for (int x = 0; x < area.Width; x++)
+            {
+                int targetX = area.X + x;
+                if (targetX < 0 || targetX >= destination.Width) continue;
+
+                int sourceX = Clamp(area.SourceX + x, 0, source.Width - 1);
+                destination[targetX, targetY] = source[sourceX, sourceY];
+            }
+        }
     }
 
     private static void Composite(SixLabors.ImageSharp.Image<Rgba32> destination, SixLabors.ImageSharp.Image<Rgba32> source, int offsetX, int offsetY)
@@ -848,6 +1247,12 @@ public sealed class MainWindow : Window
         return result;
     }
 
+    private static int Clamp(int value, int min, int max)
+    {
+        if (max < min) return min;
+        return Math.Min(max, Math.Max(min, value));
+    }
+
     private static int ParseInt(string? value, int fallback)
     {
         return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result) ? result : fallback;
@@ -858,6 +1263,19 @@ public sealed class MainWindow : Window
         if (string.IsNullOrWhiteSpace(value)) return fallback;
         string normalized = value.Replace(',', '.');
         return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out double result) ? result : fallback;
+    }
+
+    private static string SerializeEraseLayoutLine(EraseArea area)
+    {
+        return string.Join('|',
+            "ERASE",
+            area.Name,
+            area.X.ToString(CultureInfo.InvariantCulture),
+            area.Y.ToString(CultureInfo.InvariantCulture),
+            area.Width.ToString(CultureInfo.InvariantCulture),
+            area.Height.ToString(CultureInfo.InvariantCulture),
+            area.SourceX.ToString(CultureInfo.InvariantCulture),
+            area.SourceY.ToString(CultureInfo.InvariantCulture));
     }
 
     private static string SerializeLayoutLine(UiTextItem item)
@@ -876,6 +1294,11 @@ public sealed class MainWindow : Window
             item.Text);
     }
 
+    private static void SetZIndex(Control control, int zIndex)
+    {
+        control.ZIndex = zIndex;
+    }
+
     private void SetStatus(string message)
     {
         _status.Text = message;
@@ -886,7 +1309,30 @@ public sealed class MainWindow : Window
         None,
         Move,
         ResizeWidth,
-        ResizeScale
+        ResizeScale,
+        MoveErase,
+        MoveEraseSource,
+        ResizeErase
+    }
+
+    private sealed class EraseArea
+    {
+        public string Name { get; set; } = "ERASE";
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; } = 40;
+        public int Height { get; set; } = 16;
+        public int SourceX { get; set; }
+        public int SourceY { get; set; }
+        public required AvaloniaImage ImageControl { get; init; }
+        public required AvaloniaBorder TargetBorder { get; init; }
+        public required AvaloniaBorder SourceBorder { get; init; }
+        public required AvaloniaBorder ResizeHandle { get; init; }
+
+        public override string ToString()
+        {
+            return $"{Name}: target {X},{Y} source {SourceX},{SourceY}";
+        }
     }
 
     private sealed class UiTextItem
