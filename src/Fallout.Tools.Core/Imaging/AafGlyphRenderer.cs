@@ -33,7 +33,7 @@ public sealed class AafGlyphRenderer
             return image;
         }
 
-        int yOffset = Math.Max(0, font.MaxHeight - glyph.Height);
+        int yOffset = Math.Max(0, (int)font.MaxHeight - glyph.Height);
 
         for (int y = 0; y < glyph.Height; y++)
         {
@@ -74,7 +74,7 @@ public sealed class AafGlyphRenderer
 
             if (!glyph.HasBitmap) continue;
 
-            int yOffset = Math.Max(0, font.MaxHeight - glyph.Height);
+            int yOffset = Math.Max(0, (int)font.MaxHeight - glyph.Height);
             for (int y = 0; y < glyph.Height; y++)
             {
                 for (int x = 0; x < glyph.Width; x++)

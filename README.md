@@ -1,41 +1,28 @@
-# Fallout 1/2 Tools
+# Fallout 1/2 Tools - TTF Sprint 2.1 Hotfix
 
-Open-source tools for Fallout 1, Fallout 2, and related classic Fallout mods.
+This hotfix keeps the AAF -> TTF exporter, but adds a pixel-perfect PNG text renderer.
 
-## MVP 1: FalloutFontTool
+Why: a classic TrueType font can only store monochrome outlines. It cannot preserve the original Fallout AAF multi-tone pixel texture. For UI translation work, rendering text from the original AAF glyph pixels into PNG is more faithful than using the TTF directly.
 
-The first MVP focuses on Fallout `.AAF` fonts:
-
-- Read `.AAF` font files.
-- Print font metadata.
-- Export every glyph as PNG.
-- Export a 16x16 atlas PNG.
-
-## Quick start
+## New command
 
 ```bash
-dotnet restore
-dotnet build
+dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF BARTER exports/BARTER.png --scale 1 --palette orange
 ```
 
-Show font information:
+For text with spaces, use quotes:
 
 ```bash
-dotnet run --project src/Fallout.Tools.CLI -- info samples/FONT3.AAF
+dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF "SAVE GLYPH" exports/SAVE_GLYPH.png --scale 1 --palette orange
 ```
 
-Export glyphs:
+Useful options:
 
 ```bash
-dotnet run --project src/Fallout.Tools.CLI -- export samples/FONT3.AAF exports/FONT3 --scale 4
+--scale 1
+--palette auto|gray|orange|green
+--letter-spacing 0
+--line-spacing 0
 ```
 
-Run tests:
-
-```bash
-dotnet test
-```
-
-## Asset note
-
-Do not commit original Fallout game assets such as `.AAF`, `.FON`, `.PAL`, `.DAT`, or `.FRM` files. Keep them locally in `samples/` for testing.
+Use `--scale 1` for direct FRM/BMP editing. Use higher scale values only for previewing.

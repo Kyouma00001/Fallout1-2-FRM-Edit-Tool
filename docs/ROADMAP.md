@@ -19,8 +19,9 @@
 
 ## v0.3 - TTF export
 
-- [ ] Generate monochrome/vectorized TTF from `.AAF`
-- [ ] Preserve glyph advance widths
+- [x] Generate monochrome/vectorized TTF from `.AAF`
+- [x] Preserve glyph advance widths
+- [ ] Validate generated TTF in Windows and Photoshop
 - [ ] Add PT-BR glyph generation helpers
 
 ## v0.4 - FRM workflow
