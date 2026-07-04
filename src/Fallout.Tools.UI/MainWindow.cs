@@ -1449,16 +1449,23 @@ public sealed class MainWindow : Window
 
     private void RemoveSelected()
     {
-        if (_selectedItem is not null)
+        UiTextItem? item = _selectedItem ?? _itemsList.SelectedItem as UiTextItem;
+        if (item is not null)
         {
+            _selectedItem = item;
             RemoveSelectedText();
             return;
         }
 
-        if (_selectedErase is not null)
+        EraseArea? area = _selectedErase ?? _eraseList.SelectedItem as EraseArea;
+        if (area is not null)
         {
+            _selectedErase = area;
             RemoveSelectedErase();
+            return;
         }
+
+        SetStatus("Select a text item or erase patch before pressing Remove.");
     }
 
     private void RemoveSelectedText()
@@ -1469,6 +1476,8 @@ public sealed class MainWindow : Window
         _canvas.Children.Remove(_selectedItem.SelectionBorder);
         _canvas.Children.Remove(_selectedItem.WidthHandle);
         _canvas.Children.Remove(_selectedItem.ScaleHandle);
+        _itemsList.SelectedIndex = -1;
+        _itemsList.SelectedItem = null;
         _items.Remove(_selectedItem);
         _selectedItem = null;
         UpdateSelectionVisuals();
@@ -1485,6 +1494,8 @@ public sealed class MainWindow : Window
         _canvas.Children.Remove(_selectedErase.TargetBorder);
         _canvas.Children.Remove(_selectedErase.SourceBorder);
         _canvas.Children.Remove(_selectedErase.ResizeHandle);
+        _eraseList.SelectedIndex = -1;
+        _eraseList.SelectedItem = null;
         _eraseAreas.Remove(_selectedErase);
         _selectedErase = null;
         UpdateSelectionVisuals();
