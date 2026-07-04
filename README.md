@@ -1,11 +1,17 @@
-# Render uppercase hotfix
+# Render batch sprint
 
-Adds `--uppercase` / `--force-uppercase` to the `render` command.
+Adds `render-batch` to generate multiple UI text PNGs from one UTF-8 text file.
 
 Example:
 
 ```bash
-dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF "negociação" exports/NEGOCIACAO.png --scale 1 --palette orange --uppercase
+dotnet run --project src/Fallout.Tools.CLI -- render-batch samples/FONT4.AAF samples/render-batch.example.txt exports/ui-text --scale 1 --palette orange --uppercase
 ```
 
-This keeps the original AAF glyphs, but converts the input text to uppercase before rendering.
+Input format:
+
+```text
+BARTER=negociar
+TALK=falar
+DONE=pronto
+```

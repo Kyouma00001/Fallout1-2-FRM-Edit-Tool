@@ -1,0 +1,11 @@
+# FalloutFontTool render-batch example
+# Format: OUTPUT_NAME=Text to render
+# Save this file as UTF-8.
+
+BARTER=negociar
+TALK=falar
+DONE=pronto
+INVENTORY=inventário
+OPTIONS=opções
+ACTIONS=ações
+NEGOTIATION=negociação

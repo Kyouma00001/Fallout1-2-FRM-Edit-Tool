@@ -1,3 +1,4 @@
+using System.Text;
 using Fallout.Tools.Core.AAF;
 using Fallout.Tools.Core.Fonts;
 using Fallout.Tools.Core.Imaging;
@@ -23,6 +24,7 @@ internal static class Program
                 "info" => RunInfo(args.Skip(1).ToArray()),
                 "export" => RunExport(args.Skip(1).ToArray()),
                 "render" => RunRender(args.Skip(1).ToArray()),
+                "render-batch" => RunRenderBatch(args.Skip(1).ToArray()),
                 "ttf" => RunTtf(args.Skip(1).ToArray()),
                 _ => Fail($"Unknown command: {args[0]}")
             };
@@ -101,55 +103,165 @@ internal static class Program
     }
 
     private static int RunRender(string[] args)
-{
-    if (args.Length < 3 || IsHelp(args[0]))
     {
-        PrintRenderHelp();
-        return args.Length < 3 ? 1 : 0;
+        if (args.Length < 3 || IsHelp(args[0]))
+        {
+            PrintRenderHelp();
+            return args.Length < 3 ? 1 : 0;
+        }
+
+        string inputPath = args[0];
+        string text = args[1];
+        string outputPath = args[2];
+
+        AafTextRenderOptions options = ReadTextRenderOptions(args);
+        AafPaletteKind paletteKind = ReadPaletteOption(args, "--palette", AafPaletteKind.Auto);
+
+        AafFont font = new AafReader().Read(inputPath);
+        AafRenderPalette palette = AafRenderPalette.Create(paletteKind, inputPath);
+        AafTextRenderer renderer = new AafTextRenderer(palette);
+
+        RenderTextToPng(renderer, font, text, outputPath, options);
+
+        Console.WriteLine("Rendered text PNG:");
+        Console.WriteLine(outputPath);
+        Console.WriteLine($"Text: {text}");
+        Console.WriteLine($"Scale: {options.Scale}");
+        Console.WriteLine($"Letter spacing: {options.LetterSpacing}");
+        Console.WriteLine($"Line spacing: {options.LineSpacing}");
+        Console.WriteLine($"Uppercase: {options.ForceUppercase}");
+
+        return 0;
     }
 
-    string inputPath = args[0];
-    string text = args[1];
-    string outputPath = args[2];
-
-    int scale = ReadIntOption(args, "--scale", defaultValue: 1);
-    int letterSpacing = ReadIntOption(args, "--letter-spacing", defaultValue: 0, allowZero: true);
-    int lineSpacing = ReadIntOption(args, "--line-spacing", defaultValue: 0, allowZero: true);
-    bool forceUppercase = HasFlag(args, "--uppercase") || HasFlag(args, "--force-uppercase");
-    AafPaletteKind paletteKind = ReadPaletteOption(args, "--palette", AafPaletteKind.Auto);
-
-    AafFont font = new AafReader().Read(inputPath);
-    AafRenderPalette palette = AafRenderPalette.Create(paletteKind, inputPath);
-    AafTextRenderer renderer = new AafTextRenderer(palette);
-
-    using var image = renderer.RenderText(font, text, new AafTextRenderOptions
+    private static int RunRenderBatch(string[] args)
     {
-        Scale = scale,
-        LetterSpacing = letterSpacing,
-        LineSpacing = lineSpacing,
-        ForceUppercase = forceUppercase
-    });
+        if (args.Length < 3 || IsHelp(args[0]))
+        {
+            PrintRenderBatchHelp();
+            return args.Length < 3 ? 1 : 0;
+        }
 
-    string? outputDirectory = Path.GetDirectoryName(outputPath);
+        string inputPath = args[0];
+        string manifestPath = args[1];
+        string outputDirectory = args[2];
 
-    if (!string.IsNullOrWhiteSpace(outputDirectory))
-    {
+        AafTextRenderOptions options = ReadTextRenderOptions(args);
+        AafPaletteKind paletteKind = ReadPaletteOption(args, "--palette", AafPaletteKind.Auto);
+
+        AafFont font = new AafReader().Read(inputPath);
+        AafRenderPalette palette = AafRenderPalette.Create(paletteKind, inputPath);
+        AafTextRenderer renderer = new AafTextRenderer(palette);
+
         Directory.CreateDirectory(outputDirectory);
+
+        int rendered = 0;
+        int lineNumber = 0;
+
+        foreach (string rawLine in File.ReadLines(manifestPath, Encoding.UTF8))
+        {
+            lineNumber++;
+
+            string line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#'))
+            {
+                continue;
+            }
+
+            (string name, string text) = ParseBatchLine(line, lineNumber);
+            string fileName = MakeSafeFileName(name) + ".png";
+            string outputPath = Path.Combine(outputDirectory, fileName);
+
+            RenderTextToPng(renderer, font, text, outputPath, options);
+
+            rendered++;
+            Console.WriteLine($"{fileName}: {text}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Rendered {rendered} PNG file(s) to:");
+        Console.WriteLine(outputDirectory);
+
+        return 0;
     }
 
-    using FileStream stream = File.Create(outputPath);
-    image.Save(stream, new PngEncoder());
+    private static void RenderTextToPng(
+        AafTextRenderer renderer,
+        AafFont font,
+        string text,
+        string outputPath,
+        AafTextRenderOptions options)
+    {
+        using var image = renderer.RenderText(font, text, options);
 
-    Console.WriteLine("Rendered text PNG:");
-    Console.WriteLine(outputPath);
-    Console.WriteLine($"Text: {text}");
-    Console.WriteLine($"Scale: {scale}");
-    Console.WriteLine($"Letter spacing: {letterSpacing}");
-    Console.WriteLine($"Line spacing: {lineSpacing}");
-    Console.WriteLine($"Uppercase: {forceUppercase}");
+        string? outputDirectory = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
 
-    return 0;
-}
+        using FileStream stream = File.Create(outputPath);
+        image.Save(stream, new PngEncoder());
+    }
+
+    private static (string Name, string Text) ParseBatchLine(string line, int lineNumber)
+    {
+        int separatorIndex = line.IndexOf('=');
+
+        if (separatorIndex < 0)
+        {
+            separatorIndex = line.IndexOf('\t');
+        }
+
+        if (separatorIndex <= 0 || separatorIndex >= line.Length - 1)
+        {
+            throw new ArgumentException(
+                $"Invalid batch line {lineNumber}. Use NAME=Text to render or NAME<TAB>Text to render.");
+        }
+
+        string name = line[..separatorIndex].Trim();
+        string text = line[(separatorIndex + 1)..].Trim();
+
+        if (name.Length == 0)
+        {
+            throw new ArgumentException($"Invalid batch line {lineNumber}: output name is empty.");
+        }
+
+        if (text.Length == 0)
+        {
+            throw new ArgumentException($"Invalid batch line {lineNumber}: text is empty.");
+        }
+
+        return (name, text);
+    }
+
+    private static string MakeSafeFileName(string value)
+    {
+        char[] invalidChars = Path.GetInvalidFileNameChars();
+        char[] chars = value.Trim().ToCharArray();
+
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (invalidChars.Contains(chars[i]) || char.IsWhiteSpace(chars[i]))
+            {
+                chars[i] = '_';
+            }
+        }
+
+        string fileName = new string(chars).Trim('_');
+        return fileName.Length == 0 ? "rendered_text" : fileName;
+    }
+
+    private static AafTextRenderOptions ReadTextRenderOptions(string[] args)
+    {
+        return new AafTextRenderOptions
+        {
+            Scale = ReadIntOption(args, "--scale", defaultValue: 1),
+            LetterSpacing = ReadIntOption(args, "--letter-spacing", defaultValue: 0, allowZero: true),
+            LineSpacing = ReadIntOption(args, "--line-spacing", defaultValue: 0, allowZero: true),
+            ForceUppercase = HasFlag(args, "--uppercase") || HasFlag(args, "--force-uppercase")
+        };
+    }
 
     private static int RunTtf(string[] args)
     {
@@ -270,6 +382,7 @@ internal static class Program
         Console.WriteLine("  FalloutFontTool info <font.aaf>");
         Console.WriteLine("  FalloutFontTool export <font.aaf> [output-dir] [--scale 4] [--palette auto|gray|orange|green] [--no-atlas]");
         Console.WriteLine("  FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
+        Console.WriteLine("  FalloutFontTool render-batch <font.aaf> <texts.txt> <output-dir> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
         Console.WriteLine("  FalloutFontTool ttf <font.aaf> [output.ttf] [--name FontName] [--units-per-pixel 64]");
         Console.WriteLine();
         Console.WriteLine("Examples:");
@@ -277,6 +390,7 @@ internal static class Program
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- export samples/FONT4.AAF exports/FONT4 --scale 4 --palette orange");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF BARTER exports/BARTER.png --scale 1 --palette orange");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF negociação exports/NEGOCIACAO.png --scale 1 --palette orange --uppercase");
+        Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render-batch samples/FONT4.AAF samples/render-batch.example.txt exports/ui-text --scale 1 --palette orange --uppercase");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- ttf samples/FONT4.AAF exports/FONT4.ttf --name FalloutFont4");
     }
 
@@ -288,6 +402,15 @@ internal static class Program
     private static void PrintRenderHelp()
     {
         Console.WriteLine("Usage: FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
+    }
+
+    private static void PrintRenderBatchHelp()
+    {
+        Console.WriteLine("Usage: FalloutFontTool render-batch <font.aaf> <texts.txt> <output-dir> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
+        Console.WriteLine();
+        Console.WriteLine("Text file format:");
+        Console.WriteLine("  OUTPUT_NAME=Text to render");
+        Console.WriteLine("  # Lines starting with # are ignored");
     }
 
     private static void PrintTtfHelp()
