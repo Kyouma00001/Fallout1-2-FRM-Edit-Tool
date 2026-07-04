@@ -1,18 +1,43 @@
-# Sprint 4 - UI compose workflow
+# Sprint 5 - Visual UI Text Editor
 
-Adds `compose-ui`, a command that overlays AAF-rendered text onto a base BMP/PNG image using coordinate layouts.
-
-Main use case:
+This package adds a first visual editor project:
 
 ```text
-FRM -> BMP/PNG -> clean old text -> compose-ui -> PNG -> FRM
+src/Fallout.Tools.UI
 ```
 
-New files:
+It lets you:
 
-- `src/Fallout.Tools.Core/Imaging/UiTextAlignment.cs`
-- `src/Fallout.Tools.Core/Imaging/UiTextPlacement.cs`
-- `src/Fallout.Tools.Core/Imaging/UiTextLayoutParser.cs`
-- `src/Fallout.Tools.Core/Imaging/UiTextComposer.cs`
-- `docs/UI_COMPOSE.md`
-- `samples/ui-compose.example.txt`
+- open a clean PNG/BMP UI image;
+- open an AAF font;
+- add translated text visually;
+- drag text with the mouse;
+- save a layout file;
+- export the composed PNG.
+
+## Apply
+
+Extract this package into the repository root.
+
+Then add the UI project to the solution:
+
+```bash
+dotnet sln Fallout.Tools.sln add src/Fallout.Tools.UI/Fallout.Tools.UI.csproj
+```
+
+Build and test:
+
+```bash
+dotnet build
+dotnet test
+```
+
+Run:
+
+```bash
+dotnet run --project src/Fallout.Tools.UI
+```
+
+## Scope
+
+This sprint is for static UI images only. FRM reimport will come later and should target static/single-image FRM files first.
