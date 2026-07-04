@@ -24,6 +24,8 @@ namespace Fallout.Tools.UI;
 public sealed class MainWindow : Window
 {
     private readonly Canvas _canvas = new();
+    private readonly Canvas _zoomHost = new();
+    private readonly ScrollViewer _canvasScroll = new();
     private readonly AvaloniaImage _baseImage = new();
     private readonly ListBox _itemsList = new();
     private readonly ListBox _eraseList = new();
@@ -53,6 +55,13 @@ public sealed class MainWindow : Window
     private readonly TextBlock _frmIndicator = new();
     private readonly TextBlock _aafIndicator = new();
     private readonly TextBlock _actIndicator = new();
+    private readonly TextBlock _zoomLabel = new() { Text = "Zoom: 100%" };
+
+    private readonly EditorSettings _settings = EditorSettings.Load();
+    private double _zoom = 1.0;
+    private bool _isPanning;
+    private AvaloniaPoint _panStartPoint;
+    private Vector _panStartOffset;
 
     private static readonly IBrush WindowBackgroundBrush = new SolidColorBrush(Color.Parse("#1B1713"));
     private static readonly IBrush PanelBackgroundBrush = new SolidColorBrush(Color.Parse("#2A221B"));
@@ -88,6 +97,15 @@ public sealed class MainWindow : Window
     private double _dragStartHeightScale;
 
     private const double ResizeHandleSize = 8;
+    private const string DirectoryKeyImage = "image";
+    private const string DirectoryKeyFrm = "frm";
+    private const string DirectoryKeyAaf = "aaf";
+    private const string DirectoryKeyAct = "act";
+    private const string DirectoryKeyProject = "project";
+    private const string DirectoryKeyLayout = "layout";
+    private const string DirectoryKeyExportBmp = "export-bmp";
+    private const string DirectoryKeyExportFrm = "export-frm";
+    private const string DirectoryKeyExportPng = "export-png";
 
     private static readonly JsonSerializerOptions ProjectJsonOptions = new()
     {
@@ -108,6 +126,7 @@ public sealed class MainWindow : Window
 
         _alignBox.ItemsSource = new[] { "left", "center", "right" };
         _alignBox.SelectedIndex = 0;
+        _zoom = ClampZoom(_settings.Zoom);
 
         ApplyThemeToInputs();
         RefreshAssetIndicators();
@@ -115,7 +134,14 @@ public sealed class MainWindow : Window
         Content = BuildLayout();
         _baseImage.Stretch = Stretch.None;
         SetZIndex(_baseImage, 0);
+        _canvas.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative);
+        _zoomHost.Children.Add(_canvas);
+        _zoomHost.PointerWheelChanged += OnZoomHostPointerWheelChanged;
+        _zoomHost.PointerPressed += OnPanPointerPressed;
+        _zoomHost.PointerMoved += OnPanPointerMoved;
+        _zoomHost.PointerReleased += OnPanPointerReleased;
         _canvas.Children.Add(_baseImage);
+        ApplyZoom(saveSettings: false);
     }
 
     private Control BuildLayout()
@@ -161,24 +187,21 @@ public sealed class MainWindow : Window
         Grid.SetColumnSpan(header, 2);
         root.Children.Add(header);
 
-        var scroll = new ScrollViewer
+        _canvasScroll.Background = Brushes.Black;
+        _canvasScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _canvasScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _canvasScroll.Content = new AvaloniaBorder
         {
-            Background = Brushes.Black,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new AvaloniaBorder
-            {
-                Background = new SolidColorBrush(Color.Parse("#11100E")),
-                BorderBrush = AccentDimBrush,
-                BorderThickness = new Thickness(2),
-                Padding = new Thickness(10),
-                Child = _canvas
-            }
+            Background = new SolidColorBrush(Color.Parse("#11100E")),
+            BorderBrush = AccentDimBrush,
+            BorderThickness = new Thickness(2),
+            Padding = new Thickness(10),
+            Child = _zoomHost
         };
 
-        Grid.SetRow(scroll, 1);
-        Grid.SetColumn(scroll, 0);
-        root.Children.Add(scroll);
+        Grid.SetRow(_canvasScroll, 1);
+        Grid.SetColumn(_canvasScroll, 0);
+        root.Children.Add(_canvasScroll);
 
         var panel = BuildSidePanel();
         Grid.SetRow(panel, 1);
@@ -323,6 +346,12 @@ public sealed class MainWindow : Window
             MakeButton("Export BMP 8-bit", OnExportBmp8Async),
             MakeButton("Export FRM", OnExportFrmAsync),
             MakeButton("Export PNG preview", OnExportPngAsync)));
+
+        groups.Children.Add(BuildToolbarGroup("Zoom",
+            MakeButton("Zoom -", _ => ZoomOut()),
+            MakeButton("100%", _ => ResetZoom()),
+            MakeButton("Zoom +", _ => ZoomIn()),
+            _zoomLabel));
 
         return groups;
     }
@@ -472,6 +501,9 @@ public sealed class MainWindow : Window
         _status.TextWrapping = TextWrapping.Wrap;
         _assetSummary.Foreground = MutedBrush;
         _assetSummary.TextWrapping = TextWrapping.Wrap;
+        _zoomLabel.Foreground = TextBrush;
+        _zoomLabel.VerticalAlignment = VerticalAlignment.Center;
+        _zoomLabel.Margin = new Thickness(4, 0, 0, 6);
     }
 
     private void RefreshAssetIndicators()
@@ -490,9 +522,158 @@ public sealed class MainWindow : Window
         _assetSummary.Foreground = warningCount == 0 ? OkBrush : WarningBrush;
     }
 
+    private void ZoomIn()
+    {
+        SetZoom(_zoom * 1.25);
+    }
+
+    private void ZoomOut()
+    {
+        SetZoom(_zoom / 1.25);
+    }
+
+    private void ResetZoom()
+    {
+        SetZoom(1.0);
+    }
+
+    private void OnZoomHostPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (_baseBitmap is null)
+        {
+            return;
+        }
+
+        double oldZoom = _zoom;
+        double zoomFactor = e.Delta.Y > 0 ? 1.1 : 1.0 / 1.1;
+
+        AvaloniaPoint pointerInScroll = e.GetPosition(_canvasScroll);
+        Vector oldOffset = _canvasScroll.Offset;
+
+        double imageX = (oldOffset.X + pointerInScroll.X) / oldZoom;
+        double imageY = (oldOffset.Y + pointerInScroll.Y) / oldZoom;
+
+        SetZoom(oldZoom * zoomFactor);
+
+        double newOffsetX = imageX * _zoom - pointerInScroll.X;
+        double newOffsetY = imageY * _zoom - pointerInScroll.Y;
+
+        _canvasScroll.Offset = ClampScrollOffset(new Vector(newOffsetX, newOffsetY));
+        e.Handled = true;
+    }
+
+    private void OnPanPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_baseBitmap is null)
+        {
+            return;
+        }
+
+        PointerPoint point = e.GetCurrentPoint(_zoomHost);
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        _isPanning = true;
+        _panStartPoint = e.GetPosition(_canvasScroll);
+        _panStartOffset = _canvasScroll.Offset;
+
+        e.Pointer.Capture(_zoomHost);
+        e.Handled = true;
+    }
+
+    private void OnPanPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_isPanning || e.Pointer.Captured != _zoomHost)
+        {
+            return;
+        }
+
+        AvaloniaPoint currentPoint = e.GetPosition(_canvasScroll);
+        double deltaX = currentPoint.X - _panStartPoint.X;
+        double deltaY = currentPoint.Y - _panStartPoint.Y;
+
+        _canvasScroll.Offset = ClampScrollOffset(new Vector(
+            _panStartOffset.X - deltaX,
+            _panStartOffset.Y - deltaY));
+
+        e.Handled = true;
+    }
+
+    private void OnPanPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!_isPanning)
+        {
+            return;
+        }
+
+        _isPanning = false;
+        e.Pointer.Capture(null);
+        e.Handled = true;
+    }
+
+    private Vector ClampScrollOffset(Vector offset)
+    {
+        double maxX = Math.Max(0, _zoomHost.Bounds.Width - _canvasScroll.Viewport.Width);
+        double maxY = Math.Max(0, _zoomHost.Bounds.Height - _canvasScroll.Viewport.Height);
+
+        return new Vector(
+            Math.Clamp(offset.X, 0, maxX),
+            Math.Clamp(offset.Y, 0, maxY));
+    }
+
+    private void SetZoom(double zoom)
+    {
+        _zoom = ClampZoom(zoom);
+        ApplyZoom(saveSettings: true);
+    }
+
+    private void ApplyZoom(bool saveSettings)
+    {
+        _canvas.RenderTransform = new ScaleTransform(_zoom, _zoom);
+        UpdateZoomHostSize();
+        _zoomLabel.Text = $"Zoom: {Math.Round(_zoom * 100)}%";
+
+        if (saveSettings)
+        {
+            _settings.Zoom = _zoom;
+            SaveEditorSettings();
+        }
+    }
+
+    private void UpdateZoomHostSize()
+    {
+        double width = _canvas.Width;
+        double height = _canvas.Height;
+
+        if (double.IsNaN(width) || width <= 0)
+        {
+            width = _baseBitmap?.PixelSize.Width ?? 1;
+        }
+
+        if (double.IsNaN(height) || height <= 0)
+        {
+            height = _baseBitmap?.PixelSize.Height ?? 1;
+        }
+
+        _zoomHost.Width = Math.Max(1, width * _zoom);
+        _zoomHost.Height = Math.Max(1, height * _zoom);
+    }
+
+    private static double ClampZoom(double zoom)
+    {
+        if (double.IsNaN(zoom) || double.IsInfinity(zoom))
+        {
+            return 1.0;
+        }
+
+        return Math.Clamp(zoom, 0.25, 8.0);
+    }
+
     private async void OnOpenImageAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open clean UI image", new[] { "*.png", "*.bmp" });
+        string? path = await PickOpenFileAsync("Open clean UI image", new[] { "*.png", "*.bmp" }, DirectoryKeyImage);
         if (path is null) return;
 
         _sourceFrmPath = null;
@@ -508,7 +689,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? path = await PickOpenFileAsync("Open static FRM", new[] { "*.frm" });
+        string? path = await PickOpenFileAsync("Open static FRM", new[] { "*.frm" }, DirectoryKeyFrm);
         if (path is null) return;
 
         try
@@ -525,7 +706,7 @@ public sealed class MainWindow : Window
 
     private async void OnOpenAafAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open AAF font", new[] { "*.aaf" });
+        string? path = await PickOpenFileAsync("Open AAF font", new[] { "*.aaf" }, DirectoryKeyAaf);
         if (path is null) return;
 
         LoadAafFont(path);
@@ -534,7 +715,7 @@ public sealed class MainWindow : Window
 
     private async void OnOpenActAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open ACT palette", new[] { "*.act" });
+        string? path = await PickOpenFileAsync("Open ACT palette", new[] { "*.act" }, DirectoryKeyAct);
         if (path is null) return;
 
         try
@@ -550,7 +731,7 @@ public sealed class MainWindow : Window
 
     private async void OnSaveLayoutAsync(RoutedEventArgs _)
     {
-        string? path = await PickSaveFileAsync("Save UI layout", "ui-layout.txt", new[] { "*.txt" });
+        string? path = await PickSaveFileAsync("Save UI layout", "ui-layout.txt", new[] { "*.txt" }, DirectoryKeyLayout);
         if (path is null) return;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
@@ -560,7 +741,7 @@ public sealed class MainWindow : Window
 
     private async void OnSaveProjectAsync(RoutedEventArgs _)
     {
-        string? path = await PickSaveFileAsync("Save Fallout UI project", "ui-project.fui.json", new[] { "*.fui.json", "*.json" });
+        string? path = await PickSaveFileAsync("Save Fallout UI project", "ui-project.fui.json", new[] { "*.fui.json", "*.json" }, DirectoryKeyProject);
         if (path is null) return;
 
         try
@@ -579,7 +760,7 @@ public sealed class MainWindow : Window
 
     private async void OnOpenProjectAsync(RoutedEventArgs _)
     {
-        string? path = await PickOpenFileAsync("Open Fallout UI project", new[] { "*.fui.json", "*.json" });
+        string? path = await PickOpenFileAsync("Open Fallout UI project", new[] { "*.fui.json", "*.json" }, DirectoryKeyProject);
         if (path is null) return;
 
         try
@@ -604,7 +785,7 @@ public sealed class MainWindow : Window
     {
         if (!CanExportComposition()) return;
 
-        string? path = await PickSaveFileAsync("Export composed PNG preview", "ui-composed.png", new[] { "*.png" });
+        string? path = await PickSaveFileAsync("Export composed PNG preview", "ui-composed.png", new[] { "*.png" }, DirectoryKeyExportPng);
         if (path is null) return;
 
         if (IsSamePath(path, _baseImagePath))
@@ -630,7 +811,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" });
+        string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" }, DirectoryKeyExportBmp);
         if (path is null) return;
 
         if (IsSamePath(path, _baseImagePath))
@@ -672,7 +853,7 @@ public sealed class MainWindow : Window
         }
 
         string suggestedName = Path.GetFileNameWithoutExtension(_sourceFrmPath) + "-edited.frm";
-        string? path = await PickSaveFileAsync("Export edited FRM", suggestedName, new[] { "*.frm" });
+        string? path = await PickSaveFileAsync("Export edited FRM", suggestedName, new[] { "*.frm" }, DirectoryKeyExportFrm);
         if (path is null) return;
 
         if (IsSamePath(path, _sourceFrmPath))
@@ -999,6 +1180,7 @@ public sealed class MainWindow : Window
         _baseImage.Source = _baseBitmap;
         _canvas.Width = _baseBitmap.PixelSize.Width;
         _canvas.Height = _baseBitmap.PixelSize.Height;
+        UpdateZoomHostSize();
         Canvas.SetLeft(_baseImage, 0);
         Canvas.SetTop(_baseImage, 0);
 
@@ -1113,34 +1295,106 @@ public sealed class MainWindow : Window
         return Path.GetFullPath(Path.Combine(directory, path));
     }
 
-    private async Task<string?> PickOpenFileAsync(string title, IReadOnlyList<string> patterns)
+    private async Task<string?> PickOpenFileAsync(string title, IReadOnlyList<string> patterns, string directoryKey)
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        IStorageFolder? startLocation = await GetSuggestedStartLocationAsync(directoryKey);
+
+        var options = new FilePickerOpenOptions
         {
             Title = title,
             AllowMultiple = false,
+            SuggestedStartLocation = startLocation,
             FileTypeFilter = new[]
             {
                 new FilePickerFileType(title) { Patterns = patterns }
             }
-        });
+        };
 
-        return files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        var files = await StorageProvider.OpenFilePickerAsync(options);
+        string? path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        RememberDirectory(directoryKey, path);
+        return path;
     }
 
-    private async Task<string?> PickSaveFileAsync(string title, string suggestedName, IReadOnlyList<string> patterns)
+    private async Task<string?> PickSaveFileAsync(string title, string suggestedName, IReadOnlyList<string> patterns, string directoryKey)
     {
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        IStorageFolder? startLocation = await GetSuggestedStartLocationAsync(directoryKey);
+
+        var options = new FilePickerSaveOptions
         {
             Title = title,
             SuggestedFileName = suggestedName,
+            SuggestedStartLocation = startLocation,
             FileTypeChoices = new[]
             {
                 new FilePickerFileType(title) { Patterns = patterns }
             }
-        });
+        };
 
-        return file?.TryGetLocalPath();
+        var file = await StorageProvider.SaveFilePickerAsync(options);
+        string? path = file?.TryGetLocalPath();
+        RememberDirectory(directoryKey, path);
+        return path;
+    }
+
+    private async Task<IStorageFolder?> GetSuggestedStartLocationAsync(string directoryKey)
+    {
+        string? directory = _settings.GetLastDirectory(directoryKey);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(directory);
+            if (!fullPath.EndsWith(Path.DirectorySeparatorChar) && !fullPath.EndsWith(Path.AltDirectorySeparatorChar))
+            {
+                fullPath += Path.DirectorySeparatorChar;
+            }
+
+            return await StorageProvider.TryGetFolderFromPathAsync(new Uri(fullPath));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void RememberDirectory(string directoryKey, string? selectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(selectedPath))
+        {
+            return;
+        }
+
+        try
+        {
+            string? directory = Path.GetDirectoryName(selectedPath);
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return;
+            }
+
+            _settings.SetLastDirectory(directoryKey, directory);
+            SaveEditorSettings();
+        }
+        catch
+        {
+            // Recent path persistence should never block the editor workflow.
+        }
+    }
+
+    private void SaveEditorSettings()
+    {
+        try
+        {
+            _settings.Save();
+        }
+        catch
+        {
+            // Settings are a convenience only; ignore write errors.
+        }
     }
 
     private void AddTextItem()
