@@ -23,8 +23,8 @@ public sealed class AafGlyphRenderer
             throw new ArgumentOutOfRangeException(nameof(scale), "Scale must be greater than zero.");
         }
 
-        int logicalWidth = Math.Max(1, glyph.Width);
-        int logicalHeight = Math.Max(1, font.MaxHeight);
+        int logicalWidth = Math.Max(1, (int)glyph.Width);
+        int logicalHeight = Math.Max(1, (int)font.MaxHeight);
 
         Image<Rgba32> image = new Image<Rgba32>(logicalWidth * scale, logicalHeight * scale);
 
@@ -60,7 +60,7 @@ public sealed class AafGlyphRenderer
 
         int rows = (int)Math.Ceiling(font.Glyphs.Count / (double)columns);
         int maxGlyphWidth = Math.Max(1, font.MaxGlyphWidth);
-        int maxGlyphHeight = Math.Max(1, font.MaxHeight);
+        int maxGlyphHeight = Math.Max(1, (int)font.MaxHeight);
         int cellWidth = maxGlyphWidth * scale + cellPadding * 2;
         int cellHeight = maxGlyphHeight * scale + cellPadding * 2;
 
