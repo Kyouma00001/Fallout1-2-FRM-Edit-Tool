@@ -2,7 +2,9 @@ using System.Text;
 using Fallout.Tools.Core.AAF;
 using Fallout.Tools.Core.Fonts;
 using Fallout.Tools.Core.Imaging;
+using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace Fallout.Tools.CLI;
 
@@ -25,6 +27,7 @@ internal static class Program
                 "export" => RunExport(args.Skip(1).ToArray()),
                 "render" => RunRender(args.Skip(1).ToArray()),
                 "render-batch" => RunRenderBatch(args.Skip(1).ToArray()),
+                "compose-ui" => RunComposeUi(args.Skip(1).ToArray()),
                 "ttf" => RunTtf(args.Skip(1).ToArray()),
                 _ => Fail($"Unknown command: {args[0]}")
             };
@@ -181,6 +184,51 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine($"Rendered {rendered} PNG file(s) to:");
         Console.WriteLine(outputDirectory);
+
+        return 0;
+    }
+
+    private static int RunComposeUi(string[] args)
+    {
+        if (args.Length < 4 || IsHelp(args[0]))
+        {
+            PrintComposeUiHelp();
+            return args.Length < 4 ? 1 : 0;
+        }
+
+        string inputPath = args[0];
+        string backgroundPath = args[1];
+        string layoutPath = args[2];
+        string outputPath = args[3];
+
+        AafTextRenderOptions options = ReadTextRenderOptions(args);
+        AafPaletteKind paletteKind = ReadPaletteOption(args, "--palette", AafPaletteKind.Auto);
+
+        AafFont font = new AafReader().Read(inputPath);
+        AafRenderPalette palette = AafRenderPalette.Create(paletteKind, inputPath);
+        AafTextRenderer textRenderer = new AafTextRenderer(palette);
+        UiTextComposer composer = new UiTextComposer(textRenderer);
+        IReadOnlyList<UiTextPlacement> placements = UiTextLayoutParser.ParseFile(layoutPath);
+
+        using Image<Rgba32> background = Image.Load<Rgba32>(backgroundPath);
+        using Image<Rgba32> composed = composer.Compose(background, font, placements, options);
+
+        string? outputDirectory = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        using FileStream stream = File.Create(outputPath);
+        composed.Save(stream, new PngEncoder());
+
+        Console.WriteLine("Composed UI PNG:");
+        Console.WriteLine(outputPath);
+        Console.WriteLine($"Base image: {backgroundPath}");
+        Console.WriteLine($"Layout: {layoutPath}");
+        Console.WriteLine($"Texts: {placements.Count}");
+        Console.WriteLine($"Scale: {options.Scale}");
+        Console.WriteLine($"Uppercase: {options.ForceUppercase}");
 
         return 0;
     }
@@ -383,6 +431,7 @@ internal static class Program
         Console.WriteLine("  FalloutFontTool export <font.aaf> [output-dir] [--scale 4] [--palette auto|gray|orange|green] [--no-atlas]");
         Console.WriteLine("  FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
         Console.WriteLine("  FalloutFontTool render-batch <font.aaf> <texts.txt> <output-dir> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
+        Console.WriteLine("  FalloutFontTool compose-ui <font.aaf> <base.png|base.bmp> <layout.txt> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
         Console.WriteLine("  FalloutFontTool ttf <font.aaf> [output.ttf] [--name FontName] [--units-per-pixel 64]");
         Console.WriteLine();
         Console.WriteLine("Examples:");
@@ -391,6 +440,7 @@ internal static class Program
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF BARTER exports/BARTER.png --scale 1 --palette orange");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF negociação exports/NEGOCIACAO.png --scale 1 --palette orange --uppercase");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render-batch samples/FONT4.AAF samples/render-batch.example.txt exports/ui-text --scale 1 --palette orange --uppercase");
+        Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- compose-ui samples/FONT4.AAF samples/ui-compose-base.png samples/ui-compose.example.txt exports/ui-composed.png --scale 1 --palette orange --uppercase");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- ttf samples/FONT4.AAF exports/FONT4.ttf --name FalloutFont4");
     }
 
@@ -410,6 +460,18 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Text file format:");
         Console.WriteLine("  OUTPUT_NAME=Text to render");
+        Console.WriteLine("  # Lines starting with # are ignored");
+    }
+
+    private static void PrintComposeUiHelp()
+    {
+        Console.WriteLine("Usage: FalloutFontTool compose-ui <font.aaf> <base.png|base.bmp> <layout.txt> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
+        Console.WriteLine();
+        Console.WriteLine("Layout file format:");
+        Console.WriteLine("  NAME|X|Y|TEXT");
+        Console.WriteLine("  NAME|X|Y|WIDTH|left|TEXT");
+        Console.WriteLine("  NAME|X|Y|WIDTH|center|TEXT");
+        Console.WriteLine("  NAME|X|Y|WIDTH|right|TEXT");
         Console.WriteLine("  # Lines starting with # are ignored");
     }
 

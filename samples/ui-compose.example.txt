@@ -1,0 +1,5 @@
+# NAME|X|Y|WIDTH|ALIGN|TEXT
+# Use this with a cleaned base image exported from a FRM/BMP workflow.
+BARTER|10|8|70|center|negociar
+TALK|90|8|50|center|falar
+DONE|150|8|60|center|pronto
