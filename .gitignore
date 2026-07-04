@@ -4,15 +4,63 @@ obj/
 TestResults/
 .vs/
 .vscode/
+.idea/
 
-# User/local samples extracted from Fallout installs
-samples/*.AAF
-samples/*.FON
-samples/*.PAL
-samples/*.DAT
-samples/*.FRM
+# Local publish/release output
+artifacts/
+dist/
+release/
+*.nupkg
+*.snupkg
+*.zip
 
-# Exported assets
-*_export/
+# Local/generated editor output
 exports/
-samples/*.png
+*_export/
+*.fui.json
+*.fui.json.bak
+
+# Fallout/game assets and derived files
+*.frm
+*.FRM
+*.aaf
+*.AAF
+*.act
+*.ACT
+*.pal
+*.PAL
+*.fon
+*.FON
+*.dat
+*.DAT
+*.bmp
+*.BMP
+*.ttf
+*.TTF
+
+# Generated preview/output images
+*.png
+*.PNG
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.webp
+*.WEBP
+
+# Allow documentation images if they are intentionally added later
+!docs/**/*.png
+!docs/**/*.PNG
+!docs/**/*.jpg
+!docs/**/*.JPG
+!docs/**/*.jpeg
+!docs/**/*.JPEG
+!docs/**/*.webp
+!docs/**/*.WEBP
+
+# Samples folder should contain only safe text/readme examples by default
+samples/**
+!samples/
+!samples/README.md
+!samples/*.txt
+!samples/*.example.txt

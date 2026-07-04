@@ -1,32 +1,48 @@
 # Roadmap
 
-## v0.1 - AAF export MVP
+## Done / current
 
-- [x] Project skeleton
-- [x] AAF reader
-- [x] CLI `info`
-- [x] CLI `export`
-- [x] Individual glyph PNG export
-- [x] Atlas PNG export
-- [ ] Test with Fallout `FONT0.AAF` through `FONT4.AAF`
+- [x] Project skeleton with Core, CLI, UI, and tests.
+- [x] AAF reader.
+- [x] AAF glyph PNG export and atlas export.
+- [x] AAF text renderer.
+- [x] Batch text rendering.
+- [x] UI composition over PNG/BMP images.
+- [x] Experimental AAF to TTF export.
+- [x] Static FRM info/export/import workflow.
+- [x] Indexed BMP 8-bit export with ACT palette.
+- [x] Visual editor for static UI text placement.
+- [x] Text move/resize handles.
+- [x] Erase/clone patches.
+- [x] Project save/load with `.fui.json`.
+- [x] Open FRM and export FRM directly from the editor.
+- [x] Safety checks to prevent unsafe overwrites.
+- [x] Fallout-inspired editor theme.
+- [x] Recent file picker directories.
+- [x] Zoom controls, mouse wheel zoom, and canvas panning.
 
-## v0.2 - AAF round-trip
+## v0.1 release candidate
 
-- [ ] Import edited PNG glyphs
-- [ ] Save `.AAF`
-- [ ] Preserve original header bytes
-- [ ] Validate in Fallout 1/2 and Fallout Et Tu
+- [ ] Final pre-PR cleanup.
+- [ ] Release build validation.
+- [ ] Manual in-game validation with edited static FRM.
+- [ ] Merge polish/release PR.
 
-## v0.3 - TTF export
+## v0.2 packaging
 
-- [x] Generate monochrome/vectorized TTF from `.AAF`
-- [x] Preserve glyph advance widths
-- [ ] Validate generated TTF in Windows and Photoshop
-- [ ] Add PT-BR glyph generation helpers
+- [ ] Publish Windows CLI binary.
+- [ ] Publish Windows UI binary.
+- [ ] Create clean user ZIP without game assets.
+- [ ] Add basic release notes.
 
-## v0.4 - FRM workflow
+## Future improvements
 
-- [ ] Read `COLOR.PAL`
-- [ ] Export `.FRM` with correct palette
-- [ ] Reimport `.FRM`
-- [ ] Preview UI text replacement
+- [ ] Split `MainWindow.cs` into smaller partial classes or services.
+- [ ] Add automated tests for FRM reader/writer.
+- [ ] Add automated tests for indexed BMP writer/reader.
+- [ ] Add tests for editor settings serialization.
+- [ ] Improve project missing-file recovery UX.
+- [ ] Add optional grid/pixel overlay for precise editing.
+- [ ] Add undo/redo for text and erase patch edits.
+- [ ] Consider multi-frame FRM support.
+- [ ] Consider safe synthetic fixture files for test coverage.
