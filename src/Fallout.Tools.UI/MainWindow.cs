@@ -1,4 +1,5 @@
 using AvaloniaImage = Avalonia.Controls.Image;
+using AvaloniaBorder = Avalonia.Controls.Border;
 using AvaloniaPoint = Avalonia.Point;
 using Avalonia;
 using Avalonia.Controls;
@@ -44,6 +45,16 @@ public sealed class MainWindow : Window
     private AafRenderPalette _palette = AafRenderPalette.Create(AafPaletteKind.Orange, string.Empty);
     private UiTextItem? _selectedItem;
     private AvaloniaPoint _dragOffset;
+    private DragMode _dragMode = DragMode.None;
+    private UiTextItem? _dragItem;
+    private AvaloniaPoint _dragStartCanvas;
+    private int _dragStartWidth;
+    private int _dragStartRenderedWidth;
+    private int _dragStartRenderedHeight;
+    private double _dragStartWidthScale;
+    private double _dragStartHeightScale;
+
+    private const double ResizeHandleSize = 8;
 
     public MainWindow()
     {
@@ -52,6 +63,8 @@ public sealed class MainWindow : Window
         Height = 760;
         MinWidth = 900;
         MinHeight = 600;
+        Focusable = true;
+        KeyDown += OnEditorKeyDown;
 
         _alignBox.ItemsSource = new[] { "left", "center", "right" };
         _alignBox.SelectedIndex = 0;
@@ -149,7 +162,7 @@ public sealed class MainWindow : Window
         panel.Children.Add(new Separator());
         panel.Children.Add(new TextBlock
         {
-            Text = "Tip: drag text with the mouse. Use Width scale to compress/expand long translations. Use Letter spacing to adjust character spacing.",
+            Text = "Tip: drag text to move it. Drag the right handle to change the layout box width. Drag the bottom-right handle to resize the rendered text. Arrow keys move the selected text by 1 pixel; Shift+arrows move by 10 pixels.",
             TextWrapping = TextWrapping.Wrap
         });
         panel.Children.Add(_status);
@@ -301,15 +314,29 @@ public sealed class MainWindow : Window
             LetterSpacing = ParseInt(_letterSpacingBox.Text, 0),
             Align = (_alignBox.SelectedItem as string) ?? "left",
             ForceUppercase = _uppercaseBox.IsChecked == true,
-            ImageControl = new AvaloniaImage { Stretch = Stretch.None }
+            ImageControl = new AvaloniaImage { Stretch = Stretch.None },
+            SelectionBorder = CreateSelectionBorder(),
+            WidthHandle = CreateResizeHandle(),
+            ScaleHandle = CreateResizeHandle()
         };
 
         item.ImageControl.PointerPressed += (_, e) => StartDrag(item, e);
         item.ImageControl.PointerMoved += (_, e) => ContinueDrag(item, e);
         item.ImageControl.PointerReleased += (_, e) => EndDrag(e);
 
+        item.WidthHandle.PointerPressed += (_, e) => StartResizeWidth(item, e);
+        item.WidthHandle.PointerMoved += (_, e) => ContinueResize(item, e);
+        item.WidthHandle.PointerReleased += (_, e) => EndDrag(e);
+
+        item.ScaleHandle.PointerPressed += (_, e) => StartResizeScale(item, e);
+        item.ScaleHandle.PointerMoved += (_, e) => ContinueResize(item, e);
+        item.ScaleHandle.PointerReleased += (_, e) => EndDrag(e);
+
         _items.Add(item);
         _canvas.Children.Add(item.ImageControl);
+        _canvas.Children.Add(item.SelectionBorder);
+        _canvas.Children.Add(item.WidthHandle);
+        _canvas.Children.Add(item.ScaleHandle);
         _itemsList.ItemsSource = null;
         _itemsList.ItemsSource = _items;
         _itemsList.SelectedItem = item;
@@ -322,8 +349,12 @@ public sealed class MainWindow : Window
         if (_selectedItem is null) return;
 
         _canvas.Children.Remove(_selectedItem.ImageControl);
+        _canvas.Children.Remove(_selectedItem.SelectionBorder);
+        _canvas.Children.Remove(_selectedItem.WidthHandle);
+        _canvas.Children.Remove(_selectedItem.ScaleHandle);
         _items.Remove(_selectedItem);
         _selectedItem = null;
+        UpdateSelectionVisuals();
         _itemsList.ItemsSource = null;
         _itemsList.ItemsSource = _items;
         SetStatus("Removed selected text item.");
@@ -332,6 +363,14 @@ public sealed class MainWindow : Window
     private void SelectItem(UiTextItem item)
     {
         _selectedItem = item;
+        SyncEditorFields(item);
+        UpdateSelectionVisuals();
+        Focus();
+        SetStatus($"Selected: {item.Name}");
+    }
+
+    private void SyncEditorFields(UiTextItem item)
+    {
         _nameBox.Text = item.Name;
         _textBox.Text = item.Text;
         _xBox.Text = item.X.ToString(CultureInfo.InvariantCulture);
@@ -343,7 +382,6 @@ public sealed class MainWindow : Window
         _letterSpacingBox.Text = item.LetterSpacing.ToString(CultureInfo.InvariantCulture);
         _alignBox.SelectedItem = item.Align;
         _uppercaseBox.IsChecked = item.ForceUppercase;
-        SetStatus($"Selected: {item.Name}");
     }
 
     private void ApplyEditorFieldsToSelected()
@@ -418,9 +456,25 @@ public sealed class MainWindow : Window
 
     private void UpdateControlPosition(UiTextItem item, int renderedWidth)
     {
-        int x = GetAlignedX(item, renderedWidth);
-        Canvas.SetLeft(item.ImageControl, x);
+        int imageX = GetAlignedX(item, renderedWidth);
+        Canvas.SetLeft(item.ImageControl, imageX);
         Canvas.SetTop(item.ImageControl, item.Y);
+
+        int boxWidth = Math.Max(1, item.Width > 0 ? item.Width : item.RenderedWidth);
+        int boxHeight = Math.Max(1, item.RenderedHeight);
+
+        item.SelectionBorder.Width = boxWidth;
+        item.SelectionBorder.Height = boxHeight;
+        Canvas.SetLeft(item.SelectionBorder, item.X);
+        Canvas.SetTop(item.SelectionBorder, item.Y);
+
+        Canvas.SetLeft(item.WidthHandle, item.X + boxWidth - ResizeHandleSize / 2);
+        Canvas.SetTop(item.WidthHandle, item.Y + boxHeight / 2.0 - ResizeHandleSize / 2);
+
+        Canvas.SetLeft(item.ScaleHandle, item.X + boxWidth - ResizeHandleSize / 2);
+        Canvas.SetTop(item.ScaleHandle, item.Y + boxHeight - ResizeHandleSize / 2);
+
+        UpdateSelectionVisuals();
     }
 
     private static int GetAlignedX(UiTextItem item, int renderedWidth)
@@ -438,25 +492,167 @@ public sealed class MainWindow : Window
     private void StartDrag(UiTextItem item, PointerPressedEventArgs e)
     {
         SelectItem(item);
+        _dragMode = DragMode.Move;
+        _dragItem = item;
         _dragOffset = e.GetPosition(item.ImageControl);
         e.Pointer.Capture(item.ImageControl);
+        e.Handled = true;
     }
 
     private void ContinueDrag(UiTextItem item, PointerEventArgs e)
     {
-        if (e.Pointer.Captured != item.ImageControl) return;
+        if (_dragMode != DragMode.Move || _dragItem != item || e.Pointer.Captured != item.ImageControl)
+        {
+            return;
+        }
 
         AvaloniaPoint canvasPosition = e.GetPosition(_canvas);
         item.X = Math.Max(0, (int)Math.Round(canvasPosition.X - _dragOffset.X));
         item.Y = Math.Max(0, (int)Math.Round(canvasPosition.Y - _dragOffset.Y));
-        _xBox.Text = item.X.ToString(CultureInfo.InvariantCulture);
-        _yBox.Text = item.Y.ToString(CultureInfo.InvariantCulture);
+        SyncEditorFields(item);
         UpdateControlPosition(item, item.RenderedWidth);
+        e.Handled = true;
     }
 
-    private static void EndDrag(PointerReleasedEventArgs e)
+    private void StartResizeWidth(UiTextItem item, PointerPressedEventArgs e)
+    {
+        SelectItem(item);
+        _dragMode = DragMode.ResizeWidth;
+        _dragItem = item;
+        _dragStartCanvas = e.GetPosition(_canvas);
+        _dragStartWidth = Math.Max(1, item.Width > 0 ? item.Width : item.RenderedWidth);
+        e.Pointer.Capture(item.WidthHandle);
+        e.Handled = true;
+    }
+
+    private void StartResizeScale(UiTextItem item, PointerPressedEventArgs e)
+    {
+        SelectItem(item);
+        _dragMode = DragMode.ResizeScale;
+        _dragItem = item;
+        _dragStartCanvas = e.GetPosition(_canvas);
+        _dragStartRenderedWidth = Math.Max(1, item.RenderedWidth);
+        _dragStartRenderedHeight = Math.Max(1, item.RenderedHeight);
+        _dragStartWidthScale = item.WidthScale;
+        _dragStartHeightScale = item.HeightScale;
+        e.Pointer.Capture(item.ScaleHandle);
+        e.Handled = true;
+    }
+
+    private void ContinueResize(UiTextItem item, PointerEventArgs e)
+    {
+        if (_dragItem != item)
+        {
+            return;
+        }
+
+        if (_dragMode == DragMode.ResizeWidth && e.Pointer.Captured == item.WidthHandle)
+        {
+            AvaloniaPoint canvasPosition = e.GetPosition(_canvas);
+            int newWidth = Math.Max(1, (int)Math.Round(_dragStartWidth + canvasPosition.X - _dragStartCanvas.X));
+            item.Width = newWidth;
+            SyncEditorFields(item);
+            UpdateControlPosition(item, item.RenderedWidth);
+            e.Handled = true;
+            return;
+        }
+
+        if (_dragMode == DragMode.ResizeScale && e.Pointer.Captured == item.ScaleHandle)
+        {
+            AvaloniaPoint canvasPosition = e.GetPosition(_canvas);
+            int newWidth = Math.Max(1, (int)Math.Round(_dragStartRenderedWidth + canvasPosition.X - _dragStartCanvas.X));
+            int newHeight = Math.Max(1, (int)Math.Round(_dragStartRenderedHeight + canvasPosition.Y - _dragStartCanvas.Y));
+
+            item.WidthScale = Math.Max(0.1, _dragStartWidthScale * newWidth / Math.Max(1, _dragStartRenderedWidth));
+            item.HeightScale = Math.Max(0.1, _dragStartHeightScale * newHeight / Math.Max(1, _dragStartRenderedHeight));
+
+            UpdateTextBitmap(item);
+            SyncEditorFields(item);
+            e.Handled = true;
+        }
+    }
+
+    private void EndDrag(PointerReleasedEventArgs e)
     {
         e.Pointer.Capture(null);
+        _dragMode = DragMode.None;
+        _dragItem = null;
+        e.Handled = true;
+    }
+
+    private static AvaloniaBorder CreateSelectionBorder()
+    {
+        return new AvaloniaBorder
+        {
+            BorderBrush = Brushes.Cyan,
+            BorderThickness = new Thickness(1),
+            Background = Brushes.Transparent,
+            IsHitTestVisible = false,
+            IsVisible = false
+        };
+    }
+
+    private static AvaloniaBorder CreateResizeHandle()
+    {
+        return new AvaloniaBorder
+        {
+            Width = ResizeHandleSize,
+            Height = ResizeHandleSize,
+            Background = Brushes.Cyan,
+            BorderBrush = Brushes.Black,
+            BorderThickness = new Thickness(1),
+            IsVisible = false
+        };
+    }
+
+    private void UpdateSelectionVisuals()
+    {
+        foreach (UiTextItem item in _items)
+        {
+            bool isSelected = ReferenceEquals(item, _selectedItem);
+            item.SelectionBorder.IsVisible = isSelected;
+            item.WidthHandle.IsVisible = isSelected;
+            item.ScaleHandle.IsVisible = isSelected;
+        }
+    }
+
+    private void OnEditorKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (_selectedItem is null)
+        {
+            return;
+        }
+
+        int step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 10 : 1;
+        bool handled = true;
+
+        switch (e.Key)
+        {
+            case Key.Left:
+                _selectedItem.X = Math.Max(0, _selectedItem.X - step);
+                break;
+            case Key.Right:
+                _selectedItem.X += step;
+                break;
+            case Key.Up:
+                _selectedItem.Y = Math.Max(0, _selectedItem.Y - step);
+                break;
+            case Key.Down:
+                _selectedItem.Y += step;
+                break;
+            default:
+                handled = false;
+                break;
+        }
+
+        if (!handled)
+        {
+            return;
+        }
+
+        SyncEditorFields(_selectedItem);
+        UpdateControlPosition(_selectedItem, _selectedItem.RenderedWidth);
+        e.Handled = true;
     }
 
     private static void Composite(SixLabors.ImageSharp.Image<Rgba32> destination, SixLabors.ImageSharp.Image<Rgba32> source, int offsetX, int offsetY)
@@ -512,6 +708,14 @@ public sealed class MainWindow : Window
         _status.Text = message;
     }
 
+    private enum DragMode
+    {
+        None,
+        Move,
+        ResizeWidth,
+        ResizeScale
+    }
+
     private sealed class UiTextItem
     {
         public string Name { get; set; } = "TEXT";
@@ -528,6 +732,9 @@ public sealed class MainWindow : Window
         public int RenderedWidth { get; set; }
         public int RenderedHeight { get; set; }
         public required AvaloniaImage ImageControl { get; init; }
+        public required AvaloniaBorder SelectionBorder { get; init; }
+        public required AvaloniaBorder WidthHandle { get; init; }
+        public required AvaloniaBorder ScaleHandle { get; init; }
 
         public override string ToString()
         {
