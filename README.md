@@ -1,18 +1,27 @@
-# Sprint 4 - UI compose workflow
+# Font Match only cleanup
 
-Adds `compose-ui`, a command that overlays AAF-rendered text onto a base BMP/PNG image using coordinate layouts.
+This package keeps the Sprint 11 `font-match` CLI command and removes the experimental Text Style Fidelity UI changes by restoring the visual editor MainWindow to the Sprint 10 version.
 
-Main use case:
+After extracting this package, delete these files if they exist:
 
-```text
-FRM -> BMP/PNG -> clean old text -> compose-ui -> PNG -> FRM
+```bash
+rm -f src/Fallout.Tools.Core/Imaging/TextStyleProcessor.cs
+rm -f docs/TEXT_STYLE_FIDELITY.md
 ```
 
-New files:
+Then run:
 
-- `src/Fallout.Tools.Core/Imaging/UiTextAlignment.cs`
-- `src/Fallout.Tools.Core/Imaging/UiTextPlacement.cs`
-- `src/Fallout.Tools.Core/Imaging/UiTextLayoutParser.cs`
-- `src/Fallout.Tools.Core/Imaging/UiTextComposer.cs`
-- `docs/UI_COMPOSE.md`
-- `samples/ui-compose.example.txt`
+```bash
+dotnet build
+dotnet test
+```
+
+Commit only the font-match files and the reverted MainWindow:
+
+```bash
+git status --short
+git add src/Fallout.Tools.CLI/Program.cs src/Fallout.Tools.Core/FontMatching/AafFontMatcher.cs src/Fallout.Tools.UI/MainWindow.cs docs/FONT_MATCH.md README.md
+git add -u
+git commit -m "feat(fonts): add AAF font matching"
+git push
+```

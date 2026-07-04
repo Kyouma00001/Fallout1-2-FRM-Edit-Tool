@@ -1,0 +1,4 @@
+# NAME|X|Y|WIDTH|ALIGN|TEXT
+BARTER|10|8|80|center|negociar
+TALK|95|8|60|center|falar
+DONE|155|8|70|center|pronto

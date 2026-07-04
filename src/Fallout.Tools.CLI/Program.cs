@@ -2,6 +2,7 @@ using System.Text;
 using Fallout.Tools.Core.AAF;
 using Fallout.Tools.Core.Fonts;
 using Fallout.Tools.Core.Imaging;
+using Fallout.Tools.Core.FRM;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.PixelFormats;
@@ -28,6 +29,9 @@ internal static class Program
                 "render" => RunRender(args.Skip(1).ToArray()),
                 "render-batch" => RunRenderBatch(args.Skip(1).ToArray()),
                 "compose-ui" => RunComposeUi(args.Skip(1).ToArray()),
+                "frm-info" => RunFrmInfo(args.Skip(1).ToArray()),
+                "frm-export" => RunFrmExport(args.Skip(1).ToArray()),
+                "frm-import" => RunFrmImport(args.Skip(1).ToArray()),
                 "ttf" => RunTtf(args.Skip(1).ToArray()),
                 _ => Fail($"Unknown command: {args[0]}")
             };
@@ -233,6 +237,105 @@ internal static class Program
         return 0;
     }
 
+    private static int RunFrmInfo(string[] args)
+    {
+        if (args.Length < 1 || IsHelp(args[0]))
+        {
+            PrintFrmInfoHelp();
+            return args.Length < 1 ? 1 : 0;
+        }
+
+        string inputPath = args[0];
+        FrmFile frm = new FrmReader().Read(inputPath);
+        FrmFrame firstFrame = frm.FirstFrame;
+
+        Console.WriteLine("Format........ FRM");
+        Console.WriteLine($"File.......... {inputPath}");
+        Console.WriteLine($"Version....... {frm.Version}");
+        Console.WriteLine($"FPS........... {frm.FramesPerSecond}");
+        Console.WriteLine($"ActionFrame... {frm.ActionFrame}");
+        Console.WriteLine($"Frames/Dir.... {frm.FramesPerDirection}");
+        Console.WriteLine($"ParsedFrames.. {frm.Frames.Count}");
+        Console.WriteLine($"DataSize...... {frm.DataSize}");
+        Console.WriteLine($"Static........ {frm.IsStaticSingleFrame}");
+        Console.WriteLine($"FirstFrame.... {firstFrame.Width}x{firstFrame.Height}");
+        Console.WriteLine($"Offset........ {firstFrame.OffsetX},{firstFrame.OffsetY}");
+        Console.WriteLine("DirOffsets.... " + string.Join(", ", frm.DirectionOffsets.Select(x => x.ToString())));
+
+        return 0;
+    }
+
+    private static int RunFrmExport(string[] args)
+    {
+        if (args.Length < 2 || IsHelp(args[0]))
+        {
+            PrintFrmExportHelp();
+            return args.Length < 2 ? 1 : 0;
+        }
+
+        string inputPath = args[0];
+        string outputPath = args[1];
+        string? actPath = ReadStringOption(args, "--act");
+        if (string.IsNullOrWhiteSpace(actPath))
+        {
+            throw new ArgumentException("Missing --act <palette.act>. Exported BMP files must use the same indexed palette expected by the FRM workflow.");
+        }
+
+        FrmFile frm = new FrmReader().Read(inputPath);
+        if (!frm.IsStaticSingleFrame)
+        {
+            throw new FrmException("frm-export currently supports static/single-frame FRM files only.");
+        }
+
+        FrmFrame frame = frm.FirstFrame;
+        ActPalette palette = ActPalette.Load(actPath);
+        var image = new IndexedImage(frame.Width, frame.Height, frame.Pixels.ToArray());
+        new IndexedBmp8Writer().Write(outputPath, image, palette.Colors);
+
+        Console.WriteLine("Exported static FRM to indexed 8-bit BMP:");
+        Console.WriteLine(outputPath);
+        Console.WriteLine($"Size: {frame.Width}x{frame.Height}");
+        Console.WriteLine($"ACT: {actPath}");
+
+        return 0;
+    }
+
+    private static int RunFrmImport(string[] args)
+    {
+        if (args.Length < 3 || IsHelp(args[0]))
+        {
+            PrintFrmImportHelp();
+            return args.Length < 3 ? 1 : 0;
+        }
+
+        string originalFrmPath = args[0];
+        string editedBmpPath = args[1];
+        string outputFrmPath = args[2];
+
+        FrmFile original = new FrmReader().Read(originalFrmPath);
+        if (!original.IsStaticSingleFrame)
+        {
+            throw new FrmException("frm-import currently supports static/single-frame FRM files only.");
+        }
+
+        FrmFrame frame = original.FirstFrame;
+        IndexedImage bmp = new IndexedBmp8Reader().Read(editedBmpPath);
+        if (bmp.Width != frame.Width || bmp.Height != frame.Height)
+        {
+            throw new FrmException($"Edited BMP size is {bmp.Width}x{bmp.Height}, but the original FRM frame is {frame.Width}x{frame.Height}. Use the exact same dimensions.");
+        }
+
+        FrmFile output = original.CreateStaticCopyWithFirstFramePixels(bmp.Pixels);
+        new FrmWriter().Write(outputFrmPath, output);
+
+        Console.WriteLine("Imported indexed 8-bit BMP into static FRM:");
+        Console.WriteLine(outputFrmPath);
+        Console.WriteLine($"Size: {frame.Width}x{frame.Height}");
+        Console.WriteLine("Pixel indices were copied from the BMP without color remapping.");
+
+        return 0;
+    }
+
     private static void RenderTextToPng(
         AafTextRenderer renderer,
         AafFont font,
@@ -432,6 +535,9 @@ internal static class Program
         Console.WriteLine("  FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
         Console.WriteLine("  FalloutFontTool render-batch <font.aaf> <texts.txt> <output-dir> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
         Console.WriteLine("  FalloutFontTool compose-ui <font.aaf> <base.png|base.bmp> <layout.txt> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
+        Console.WriteLine("  FalloutFontTool frm-info <file.frm>");
+        Console.WriteLine("  FalloutFontTool frm-export <input.frm> <output.bmp> --act <palette.act>");
+        Console.WriteLine("  FalloutFontTool frm-import <original.frm> <edited.bmp> <output.frm>");
         Console.WriteLine("  FalloutFontTool ttf <font.aaf> [output.ttf] [--name FontName] [--units-per-pixel 64]");
         Console.WriteLine();
         Console.WriteLine("Examples:");
@@ -441,6 +547,9 @@ internal static class Program
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF negociação exports/NEGOCIACAO.png --scale 1 --palette orange --uppercase");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render-batch samples/FONT4.AAF samples/render-batch.example.txt exports/ui-text --scale 1 --palette orange --uppercase");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- compose-ui samples/FONT4.AAF samples/ui-compose-base.png samples/ui-compose.example.txt exports/ui-composed.png --scale 1 --palette orange --uppercase");
+        Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- frm-info path/to/INVBOX.frm");
+        Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- frm-export path/to/INVBOX.frm exports/INVBOX.bmp --act palettes/Default.act");
+        Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- frm-import path/to/INVBOX.frm exports/INVBOX-edited.bmp exports/INVBOX-new.frm");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- ttf samples/FONT4.AAF exports/FONT4.ttf --name FalloutFont4");
     }
 
@@ -473,6 +582,25 @@ internal static class Program
         Console.WriteLine("  NAME|X|Y|WIDTH|center|TEXT");
         Console.WriteLine("  NAME|X|Y|WIDTH|right|TEXT");
         Console.WriteLine("  # Lines starting with # are ignored");
+    }
+
+    private static void PrintFrmInfoHelp()
+    {
+        Console.WriteLine("Usage: FalloutFontTool frm-info <file.frm>");
+    }
+
+    private static void PrintFrmExportHelp()
+    {
+        Console.WriteLine("Usage: FalloutFontTool frm-export <input.frm> <output.bmp> --act <palette.act>");
+        Console.WriteLine();
+        Console.WriteLine("Exports a static/single-frame FRM to an indexed 8-bit BMP using the supplied ACT palette.");
+    }
+
+    private static void PrintFrmImportHelp()
+    {
+        Console.WriteLine("Usage: FalloutFontTool frm-import <original.frm> <edited.bmp> <output.frm>");
+        Console.WriteLine();
+        Console.WriteLine("Imports an 8-bit indexed BMP back into a static/single-frame FRM. The BMP must have the exact same size as the original frame.");
     }
 
     private static void PrintTtfHelp()
