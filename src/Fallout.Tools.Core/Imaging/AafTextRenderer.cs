@@ -33,7 +33,11 @@ public sealed class AafTextRenderer
             throw new ArgumentOutOfRangeException(nameof(options), "LineSpacing cannot be negative.");
         }
 
-        string[] lines = NormalizeLines(text ?? string.Empty);
+        string renderText = options.ForceUppercase
+            ? (text ?? string.Empty).ToUpperInvariant()
+            : text ?? string.Empty;
+
+        string[] lines = NormalizeLines(renderText);
 
         int fontHeight = Math.Max(1, (int)font.MaxHeight);
         int logicalWidth = Math.Max(1, lines.Max(line => MeasureLine(font, line, options.LetterSpacing)));
@@ -158,6 +162,8 @@ public sealed class AafTextRenderOptions
     public int LetterSpacing { get; init; } = 0;
 
     public int LineSpacing { get; init; } = 0;
+
+    public bool ForceUppercase { get; init; }
 
     public static AafTextRenderOptions Default { get; } = new();
 }

@@ -39,6 +39,28 @@ public sealed class AafTextRendererTests
         Assert.Equal(9, image.Height);
     }
 
+    [Fact]
+    public void RenderText_CanForceUppercaseForAccentedCharacters()
+    {
+        AafFont font = CreateMinimalFont();
+        AafTextRenderer renderer = new(AafRenderPalette.Create(AafPaletteKind.Orange));
+
+        using var lowercaseImage = renderer.RenderText(font, "ç", new AafTextRenderOptions
+        {
+            Scale = 1,
+            ForceUppercase = false
+        });
+
+        using var uppercaseImage = renderer.RenderText(font, "ç", new AafTextRenderOptions
+        {
+            Scale = 1,
+            ForceUppercase = true
+        });
+
+        Assert.Equal(3, lowercaseImage.Width);
+        Assert.Equal(7, uppercaseImage.Width);
+    }
+
     private static AafFont CreateMinimalFont()
     {
         byte[] header = new byte[AafFormat.HeaderSize];
@@ -59,6 +81,14 @@ public sealed class AafTextRendererTests
             else if (i == 32)
             {
                 glyphs.Add(new AafGlyph(i, 3, 0, 0, AafFormat.BitmapBaseOffset, []));
+            }
+            else if (i == 199) // Ç
+            {
+                glyphs.Add(new AafGlyph(i, 7, 2, 0, AafFormat.BitmapBaseOffset, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]));
+            }
+            else if (i == 231) // ç
+            {
+                glyphs.Add(new AafGlyph(i, 3, 2, 0, AafFormat.BitmapBaseOffset, [1, 1, 1, 1, 1, 1]));
             }
             else
             {

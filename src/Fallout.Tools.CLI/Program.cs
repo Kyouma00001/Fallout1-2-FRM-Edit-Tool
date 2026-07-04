@@ -1,8 +1,7 @@
 using Fallout.Tools.Core.AAF;
-using Fallout.Tools.Core.Imaging;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
 using Fallout.Tools.Core.Fonts;
+using Fallout.Tools.Core.Imaging;
+using SixLabors.ImageSharp.Formats.Png;
 
 namespace Fallout.Tools.CLI;
 
@@ -101,48 +100,56 @@ internal static class Program
         return 0;
     }
 
-
-
     private static int RunRender(string[] args)
+{
+    if (args.Length < 3 || IsHelp(args[0]))
     {
-        if (args.Length < 3 || IsHelp(args[0]))
-        {
-            PrintRenderHelp();
-            return args.Length < 3 ? 1 : 0;
-        }
-
-        string inputPath = args[0];
-        string text = args[1];
-        string outputPath = args[2];
-        int scale = ReadIntOption(args, "--scale", defaultValue: 1);
-        int letterSpacing = ReadIntOption(args, "--letter-spacing", defaultValue: 0, allowZero: true);
-        int lineSpacing = ReadIntOption(args, "--line-spacing", defaultValue: 0, allowZero: true);
-        AafPaletteKind paletteKind = ReadPaletteOption(args, "--palette", AafPaletteKind.Auto);
-
-        AafFont font = new AafReader().Read(inputPath);
-        AafRenderPalette palette = AafRenderPalette.Create(paletteKind, inputPath);
-        AafTextRenderer renderer = new AafTextRenderer(palette);
-
-        using var image = renderer.RenderText(font, text, new AafTextRenderOptions
-        {
-            Scale = scale,
-            LetterSpacing = letterSpacing,
-            LineSpacing = lineSpacing
-        });
-
-        string? directory = Path.GetDirectoryName(outputPath);
-        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        image.SaveAsPng(outputPath);
-
-        Console.WriteLine("Rendered text PNG:");
-        Console.WriteLine(outputPath);
-        Console.WriteLine($"Text: {text}");
-        Console.WriteLine($"Scale: {scale}");
-        Console.WriteLine($"Letter spacing: {letterSpacing}");
-        Console.WriteLine($"Line spacing: {lineSpacing}");
-
-        return 0;
+        PrintRenderHelp();
+        return args.Length < 3 ? 1 : 0;
     }
+
+    string inputPath = args[0];
+    string text = args[1];
+    string outputPath = args[2];
+
+    int scale = ReadIntOption(args, "--scale", defaultValue: 1);
+    int letterSpacing = ReadIntOption(args, "--letter-spacing", defaultValue: 0, allowZero: true);
+    int lineSpacing = ReadIntOption(args, "--line-spacing", defaultValue: 0, allowZero: true);
+    bool forceUppercase = HasFlag(args, "--uppercase") || HasFlag(args, "--force-uppercase");
+    AafPaletteKind paletteKind = ReadPaletteOption(args, "--palette", AafPaletteKind.Auto);
+
+    AafFont font = new AafReader().Read(inputPath);
+    AafRenderPalette palette = AafRenderPalette.Create(paletteKind, inputPath);
+    AafTextRenderer renderer = new AafTextRenderer(palette);
+
+    using var image = renderer.RenderText(font, text, new AafTextRenderOptions
+    {
+        Scale = scale,
+        LetterSpacing = letterSpacing,
+        LineSpacing = lineSpacing,
+        ForceUppercase = forceUppercase
+    });
+
+    string? outputDirectory = Path.GetDirectoryName(outputPath);
+
+    if (!string.IsNullOrWhiteSpace(outputDirectory))
+    {
+        Directory.CreateDirectory(outputDirectory);
+    }
+
+    using FileStream stream = File.Create(outputPath);
+    image.Save(stream, new PngEncoder());
+
+    Console.WriteLine("Rendered text PNG:");
+    Console.WriteLine(outputPath);
+    Console.WriteLine($"Text: {text}");
+    Console.WriteLine($"Scale: {scale}");
+    Console.WriteLine($"Letter spacing: {letterSpacing}");
+    Console.WriteLine($"Line spacing: {lineSpacing}");
+    Console.WriteLine($"Uppercase: {forceUppercase}");
+
+    return 0;
+}
 
     private static int RunTtf(string[] args)
     {
@@ -200,7 +207,6 @@ internal static class Program
 
         return defaultValue;
     }
-
 
     private static string? ReadStringOption(string[] args, string optionName)
     {
@@ -263,13 +269,14 @@ internal static class Program
         Console.WriteLine("Usage:");
         Console.WriteLine("  FalloutFontTool info <font.aaf>");
         Console.WriteLine("  FalloutFontTool export <font.aaf> [output-dir] [--scale 4] [--palette auto|gray|orange|green] [--no-atlas]");
-        Console.WriteLine("  FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0]");
+        Console.WriteLine("  FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
         Console.WriteLine("  FalloutFontTool ttf <font.aaf> [output.ttf] [--name FontName] [--units-per-pixel 64]");
         Console.WriteLine();
         Console.WriteLine("Examples:");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- info samples/FONT3.AAF");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- export samples/FONT4.AAF exports/FONT4 --scale 4 --palette orange");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF BARTER exports/BARTER.png --scale 1 --palette orange");
+        Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- render samples/FONT4.AAF negociação exports/NEGOCIACAO.png --scale 1 --palette orange --uppercase");
         Console.WriteLine("  dotnet run --project src/Fallout.Tools.CLI -- ttf samples/FONT4.AAF exports/FONT4.ttf --name FalloutFont4");
     }
 
@@ -280,7 +287,7 @@ internal static class Program
 
     private static void PrintRenderHelp()
     {
-        Console.WriteLine("Usage: FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0]");
+        Console.WriteLine("Usage: FalloutFontTool render <font.aaf> <text> <output.png> [--scale 1] [--palette auto|gray|orange|green] [--letter-spacing 0] [--line-spacing 0] [--uppercase]");
     }
 
     private static void PrintTtfHelp()
