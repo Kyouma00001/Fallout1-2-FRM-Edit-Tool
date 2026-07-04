@@ -1,0 +1,17 @@
+# Build output
+bin/
+obj/
+TestResults/
+.vs/
+.vscode/
+
+# User/local samples extracted from Fallout installs
+samples/*.AAF
+samples/*.FON
+samples/*.PAL
+samples/*.DAT
+samples/*.FRM
+
+# Exported assets
+*_export/
+exports/

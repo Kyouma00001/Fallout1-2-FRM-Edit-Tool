@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>FalloutFontTool</AssemblyName>
+    <RootNamespace>Fallout.Tools.CLI</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Fallout.Tools.Core\Fallout.Tools.Core.csproj" />
+  </ItemGroup>
+</Project>

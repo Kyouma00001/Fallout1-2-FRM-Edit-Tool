@@ -1,0 +1,3 @@
+[submodule "reference/Fallout2FontEditor"]
+	path = reference/Fallout2FontEditor
+	url = https://github.com/jaqinta/Fallout_2_Font_Editor.git
