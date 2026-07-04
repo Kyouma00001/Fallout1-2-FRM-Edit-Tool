@@ -43,6 +43,8 @@ public sealed class MainWindow : Window
     private AafFont? _font;
     private string? _fontPath;
     private AafRenderPalette _palette = AafRenderPalette.Create(AafPaletteKind.Orange, string.Empty);
+    private Rgba32[]? _exportPalette;
+    private string? _exportPalettePath;
     private UiTextItem? _selectedItem;
     private AvaloniaPoint _dragOffset;
     private DragMode _dragMode = DragMode.None;
@@ -92,10 +94,12 @@ public sealed class MainWindow : Window
 
         toolbar.Children.Add(MakeButton("Open image", OnOpenImageAsync));
         toolbar.Children.Add(MakeButton("Open AAF", OnOpenAafAsync));
+        toolbar.Children.Add(MakeButton("Open ACT", OnOpenActAsync));
         toolbar.Children.Add(MakeButton("Add text", _ => AddTextItem()));
         toolbar.Children.Add(MakeButton("Remove", _ => RemoveSelected()));
         toolbar.Children.Add(MakeButton("Save layout", OnSaveLayoutAsync));
-        toolbar.Children.Add(MakeButton("Export PNG", OnExportPngAsync));
+        toolbar.Children.Add(MakeButton("Export BMP 8-bit", OnExportBmp8Async));
+        toolbar.Children.Add(MakeButton("Export PNG preview", OnExportPngAsync));
 
         Grid.SetColumnSpan(toolbar, 2);
         root.Children.Add(toolbar);
@@ -162,7 +166,7 @@ public sealed class MainWindow : Window
         panel.Children.Add(new Separator());
         panel.Children.Add(new TextBlock
         {
-            Text = "Tip: drag text to move it. Drag the right handle to change the layout box width. Drag the bottom-right handle to resize the rendered text. Arrow keys move the selected text by 1 pixel; Shift+arrows move by 10 pixels.",
+            Text = "Tip: drag text to move it. Drag the right handle to change the layout box width. Drag the bottom-right handle to resize the rendered text. Use Export BMP 8-bit with the ACT palette for final FRM conversion.",
             TextWrapping = TextWrapping.Wrap
         });
         panel.Children.Add(_status);
@@ -227,6 +231,23 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async void OnOpenActAsync(RoutedEventArgs _)
+    {
+        string? path = await PickOpenFileAsync("Open ACT palette", new[] { "*.act" });
+        if (path is null) return;
+
+        try
+        {
+            _exportPalette = LoadActPalette(path);
+            _exportPalettePath = path;
+            SetStatus($"Opened ACT palette: {Path.GetFileName(path)}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not open ACT palette: {ex.Message}");
+        }
+    }
+
     private async void OnSaveLayoutAsync(RoutedEventArgs _)
     {
         string? path = await PickSaveFileAsync("Save UI layout", "ui-layout.txt", new[] { "*.txt" });
@@ -239,22 +260,59 @@ public sealed class MainWindow : Window
 
     private async void OnExportPngAsync(RoutedEventArgs _)
     {
+        if (!CanExportComposition()) return;
+
+        string? path = await PickSaveFileAsync("Export composed PNG preview", "ui-composed.png", new[] { "*.png" });
+        if (path is null) return;
+
+        using SixLabors.ImageSharp.Image<Rgba32> output = ComposeOutputImage();
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
+        await using FileStream stream = File.Create(path);
+        output.Save(stream, new PngEncoder());
+        SetStatus($"Exported PNG preview: {path}");
+    }
+
+    private async void OnExportBmp8Async(RoutedEventArgs _)
+    {
+        if (!CanExportComposition()) return;
+
+        if (_exportPalette is null)
+        {
+            SetStatus("Open an ACT palette first. For Fallout UI, use the same palette that will be used when converting back to FRM.");
+            return;
+        }
+
+        string? path = await PickSaveFileAsync("Export 8-bit BMP", "ui-composed.bmp", new[] { "*.bmp" });
+        if (path is null) return;
+
+        using SixLabors.ImageSharp.Image<Rgba32> output = ComposeOutputImage();
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
+        SaveIndexedBmp8(path, output, _exportPalette);
+        SetStatus($"Exported 8-bit BMP: {path} using palette {Path.GetFileName(_exportPalettePath)}");
+    }
+
+    private bool CanExportComposition()
+    {
         if (_baseImagePath is null)
         {
             SetStatus("Open a base image first.");
-            return;
+            return false;
         }
 
         if (_font is null)
         {
             SetStatus("Open an AAF font first.");
-            return;
+            return false;
         }
 
-        string? path = await PickSaveFileAsync("Export composed PNG", "ui-composed.png", new[] { "*.png" });
-        if (path is null) return;
+        return true;
+    }
 
-        using SixLabors.ImageSharp.Image<Rgba32> output = SixLabors.ImageSharp.Image.Load<Rgba32>(_baseImagePath);
+    private SixLabors.ImageSharp.Image<Rgba32> ComposeOutputImage()
+    {
+        if (_baseImagePath is null) throw new InvalidOperationException("Base image is not loaded.");
+
+        SixLabors.ImageSharp.Image<Rgba32> output = SixLabors.ImageSharp.Image.Load<Rgba32>(_baseImagePath);
 
         foreach (UiTextItem item in _items)
         {
@@ -263,10 +321,7 @@ public sealed class MainWindow : Window
             Composite(output, textImage, drawX, item.Y);
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
-        await using FileStream stream = File.Create(path);
-        output.Save(stream, new PngEncoder());
-        SetStatus($"Exported PNG: {path}");
+        return output;
     }
 
     private async Task<string?> PickOpenFileAsync(string title, IReadOnlyList<string> patterns)
@@ -673,6 +728,124 @@ public sealed class MainWindow : Window
                 destination[targetX, targetY] = pixel;
             }
         }
+    }
+
+    private static Rgba32[] LoadActPalette(string path)
+    {
+        byte[] data = File.ReadAllBytes(path);
+        if (data.Length < 256 * 3)
+        {
+            throw new InvalidDataException("ACT palette must contain at least 768 bytes.");
+        }
+
+        var palette = new Rgba32[256];
+        for (int i = 0; i < palette.Length; i++)
+        {
+            int offset = i * 3;
+            palette[i] = new Rgba32(data[offset], data[offset + 1], data[offset + 2], 255);
+        }
+
+        return palette;
+    }
+
+    private static void SaveIndexedBmp8(string path, SixLabors.ImageSharp.Image<Rgba32> image, IReadOnlyList<Rgba32> palette)
+    {
+        if (palette.Count < 256)
+        {
+            throw new ArgumentException("The export palette must contain 256 colors.", nameof(palette));
+        }
+
+        int width = image.Width;
+        int height = image.Height;
+        int stride = ((width + 3) / 4) * 4;
+        int pixelDataSize = stride * height;
+        const int fileHeaderSize = 14;
+        const int infoHeaderSize = 40;
+        const int paletteSize = 256 * 4;
+        int pixelDataOffset = fileHeaderSize + infoHeaderSize + paletteSize;
+        int fileSize = pixelDataOffset + pixelDataSize;
+
+        var indexCache = new Dictionary<uint, byte>();
+        byte[] row = new byte[stride];
+
+        using FileStream stream = File.Create(path);
+        using var writer = new BinaryWriter(stream);
+
+        writer.Write((byte)'B');
+        writer.Write((byte)'M');
+        writer.Write(fileSize);
+        writer.Write((ushort)0);
+        writer.Write((ushort)0);
+        writer.Write(pixelDataOffset);
+
+        writer.Write(infoHeaderSize);
+        writer.Write(width);
+        writer.Write(height);
+        writer.Write((ushort)1);
+        writer.Write((ushort)8);
+        writer.Write(0);
+        writer.Write(pixelDataSize);
+        writer.Write(2835);
+        writer.Write(2835);
+        writer.Write(256);
+        writer.Write(0);
+
+        for (int i = 0; i < 256; i++)
+        {
+            Rgba32 color = palette[i];
+            writer.Write(color.B);
+            writer.Write(color.G);
+            writer.Write(color.R);
+            writer.Write((byte)0);
+        }
+
+        for (int y = height - 1; y >= 0; y--)
+        {
+            Array.Clear(row, 0, row.Length);
+            for (int x = 0; x < width; x++)
+            {
+                Rgba32 pixel = image[x, y];
+                row[x] = FindNearestPaletteIndex(pixel, palette, indexCache);
+            }
+
+            writer.Write(row);
+        }
+    }
+
+    private static byte FindNearestPaletteIndex(Rgba32 pixel, IReadOnlyList<Rgba32> palette, Dictionary<uint, byte> cache)
+    {
+        uint key = ((uint)pixel.R << 16) | ((uint)pixel.G << 8) | pixel.B;
+        if (cache.TryGetValue(key, out byte cached))
+        {
+            return cached;
+        }
+
+        int bestIndex = 0;
+        int bestDistance = int.MaxValue;
+
+        for (int i = 0; i < 256; i++)
+        {
+            Rgba32 color = palette[i];
+            int dr = pixel.R - color.R;
+            int dg = pixel.G - color.G;
+            int db = pixel.B - color.B;
+            int distance = dr * dr + dg * dg + db * db;
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestIndex = i;
+
+                if (distance == 0)
+                {
+                    break;
+                }
+            }
+        }
+
+        byte result = (byte)bestIndex;
+        cache[key] = result;
+        return result;
     }
 
     private static int ParseInt(string? value, int fallback)
